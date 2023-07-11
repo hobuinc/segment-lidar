@@ -330,28 +330,24 @@ class SamLidar:
                 ground.append(index_num)
             elif point[8] != 2:
                 non_ground.append(index_num)
-                if len(non_ground) == 1:
-                    x = point[0]
-                    y = point[1]
-                    z = point[2]
-                    seg_points = np.hstack((x,y,z))
-                else:
-                    x = point[0]
-                    y = point[1]
-                    z = point[2]
-                    seg_points = np.vstack((seg_points, (x,y,z)))
-                    print(seg_points)
-                    breakpoint()
-                    #print(len(seg_points))
-        print(seg_points)
-        print(ground[:10])
-        print(non_ground[:10])
-        print(points.shape)
-        breakpoint()
+        non_ground = np.asarray(non_ground)
+        ground = np.asarray(ground)
+        points = np.delete(points, ground)
+        x = points["X"]
+        y = points["Y"]
+        z = points["Z"]
+        seg_points = np.vstack((x, y, z)).T
+        #print(seg_points)
+        #print(ground[:10])
+        #print(non_ground[:10])
+        #print(points.shape)
+        #pipe = pdal.Writer.las(filename="smrf_test.las").pipeline(points)
+        #pipe.execute()
+        points = seg_points
 
         end = time.time()
         print(f'SMRF algorithm is completed in {end - start:.2f} seconds. The filtered non-ground cloud contains {points.shape[0]} points.\n')
-        return points, non_ground, ground
+        return points, np.asarray(non_ground), np.asarray(ground)
 
     def segment(self, points: np.ndarray, text_prompt: str = None, image_path: str = 'raster.tif', labels_path: str = 'labeled.tif') -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
