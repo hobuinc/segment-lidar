@@ -15,7 +15,7 @@ from typing import List, Tuple
 import rasterio
 import laspy
 import cv2
-
+import pdal
 
 def cloud_to_image(points: np.ndarray, minx: float, maxx: float, miny: float, maxy: float, resolution: float) -> np.ndarray:
     """
@@ -187,7 +187,7 @@ class SamLidar:
 
 
 
-    def read(self, path: str, classification: int = None) -> np.ndarray:
+    def read(self, path: str, classification: int = None) -> Tuple[np.ndarray, np.ndarray]:
         """
         Reads a point cloud from a file and returns it as a NumPy array.
 
@@ -216,6 +216,12 @@ class SamLidar:
         if extension == '.npy':
             points = np.load(path)
         elif extension in ['.laz', '.las']:
+            reader = pdal.Reader.las(filename=path)
+            pipeline = reader.pipeline()
+        
+            count = pipeline.execute()
+            pdal_points = pipeline.arrays[0]
+
             las = laspy.read(path)
             if classification == None:
                 print(f'- Classification value is not provided. Reading all points...')
@@ -240,12 +246,26 @@ class SamLidar:
             else:
                 print(f'- RGB values are not provided. Reading only XYZ values...')
                 points = np.vstack((pcd.x, pcd.y, pcd.z)).transpose()
+            
 
         end = time.time()
         print(f'File reading is completed in {end - start:.2f} seconds. The point cloud contains {points.shape[0]} points.\n')
-        return points
+        return points, pdal_points
 
+    def applyFilters(self, pdal_points: np.ndarray, filters=[]) -> np.ndarray:
+        print(pdal_points)
+        pipeline = pdal.Pipeline(arrays=[pdal_points])
+        for f in filters:
+            pipeline = pipeline | f
 
+        count = pipeline.execute()
+        if len(pipeline.arrays) > 1:
+            raise Exception("the array count was not 1!")
+
+        pdal_points = pipeline.arrays[0]
+        print(pdal_points)
+        return pdal_points
+    '''
     def csf(self, points: np.ndarray, class_threshold: float = 0.5, cloth_resolution: float = 0.2, iterations: int = 500, slope_smooth: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Applies the CSF (Cloth Simulation Filter) algorithm to filter ground points in a point cloud.
@@ -274,6 +294,14 @@ class SamLidar:
         ground = CSF.VecInt()
         non_ground = CSF.VecInt()
         csf.do_filtering(ground, non_ground)
+        print(points)
+        non_ground = np.asarray(non_ground)
+        ground = np.asarray(ground)
+        print("ground:",ground)
+        np.info(ground)
+        print("non ground:",non_ground)
+        np.info(non_ground)
+        breakpoint()
 
         points = points[non_ground, :]
         os.remove('cloth_nodes.txt')
@@ -282,7 +310,27 @@ class SamLidar:
         print(f'CSF algorithm is completed in {end - start:.2f} seconds. The filtered non-ground cloud contains {points.shape[0]} points.\n')
 
         return points, np.asarray(non_ground), np.asarray(ground)
+    '''
+    def smrf(self, pdal_points: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        start = time.time()
+        print(f'Applying SMRF algorithm...')
+        smrf = pdal.Filter.smrf()
+        reclass = pdal.Filter.assign('Classification = 0')
+        filter_list = [reclass, smrf]
+        points = SamLidar.applyFilters(self, pdal_points, filter_list)
+        print(points)
+        breakpoint()
+        ground = []
+        ground_index = -1
+        non_ground = []
+        non_ground_index = -1
+        for point in points:
+            if points
 
+
+        end = time.time()
+        print(f'SMRF algorithm is completed in {end - start:.2f} seconds. The filtered non-ground cloud contains {points.shape[0]} points.\n')
+        return points#, non_ground, ground
 
     def segment(self, points: np.ndarray, text_prompt: str = None, image_path: str = 'raster.tif', labels_path: str = 'labeled.tif') -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
