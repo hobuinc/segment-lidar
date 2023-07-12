@@ -309,7 +309,7 @@ class SamLidar:
 
         return points, np.asarray(non_ground), np.asarray(ground)
     '''
-    def smrf(self, pdal_points: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def smrf(self, pdal_points: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         start = time.time()
         print(f'Applying SMRF algorithm...')
         smrf = pdal.Filter.smrf()
@@ -321,33 +321,21 @@ class SamLidar:
         #print('smrfed',points)
         #pipeline = pdal.Writer.las(filename="ground_test.las").pipeline(points)
         #pipeline.execute()
-        ground = []
-        index_num = -1
-        non_ground = []
-        for point in points:
-            index_num += 1
-            if point[8] == 2:
-                ground.append(index_num)
-            elif point[8] != 2:
-                non_ground.append(index_num)
-        non_ground = np.asarray(non_ground)
-        ground = np.asarray(ground)
+        ground = np.where(points["Classification"]==2)
+        non_ground = np.where(points["Classification"]!=2)
         points = np.delete(points, ground)
         x = points["X"]
         y = points["Y"]
         z = points["Z"]
         seg_points = np.vstack((x, y, z)).T
-        #print(seg_points)
-        #print(ground[:10])
-        #print(non_ground[:10])
-        #print(points.shape)
         #pipe = pdal.Writer.las(filename="smrf_test.las").pipeline(points)
         #pipe.execute()
+        pdal_points = points
         points = seg_points
 
         end = time.time()
         print(f'SMRF algorithm is completed in {end - start:.2f} seconds. The filtered non-ground cloud contains {points.shape[0]} points.\n')
-        return points, np.asarray(non_ground), np.asarray(ground)
+        return points, np.asarray(non_ground), np.asarray(ground), pdal_points
 
     def segment(self, points: np.ndarray, text_prompt: str = None, image_path: str = 'raster.tif', labels_path: str = 'labeled.tif') -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
