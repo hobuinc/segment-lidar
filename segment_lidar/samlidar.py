@@ -3,10 +3,15 @@
 # This file is distributed under the BSD-3 licence. See LICENSE file for complete text of the license.
 
 import os
-import CSF
 import time
 import torch
+from typing import Dict, Optional, Set, cast
+from matplotlib.pyplot import cla
+from regex import F
+import torch
 import numpy as np
+from numpy.lib.recfunctions import structured_to_unstructured
+from numpy.lib.recfunctions import unstructured_to_structured
 import supervision as sv
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 from samgeo import SamGeo
@@ -14,8 +19,8 @@ from samgeo.text_sam import LangSAM
 from typing import List, Tuple
 import rasterio
 import laspy
-import cv2
 import pdal
+import cv2
 
 def cloud_to_image(points: np.ndarray, minx: float, maxx: float, miny: float, maxy: float, resolution: float) -> np.ndarray:
     """
@@ -315,27 +320,29 @@ class SamLidar:
         smrf = pdal.Filter.smrf()
         reclass = pdal.Filter.assign(value='Classification = 0')
         filter_list = [reclass, smrf]
-        points = SamLidar.applyFilters(self, pdal_points, filter_list)
+        pdal_points = SamLidar.applyFilters(self, pdal_points, filter_list)
         #print('reclassed',points)
         #points = SamLidar.applyFilters(self, points, [smrf])
         #print('smrfed',points)
         #pipeline = pdal.Writer.las(filename="ground_test.las").pipeline(points)
         #pipeline.execute()
-        ground = np.where(points["Classification"]==2)
-        non_ground = np.where(points["Classification"]!=2)
-        points = np.delete(points, ground)
-        x = points["X"]
-        y = points["Y"]
-        z = points["Z"]
-        seg_points = np.vstack((x, y, z)).T
-        #pipe = pdal.Writer.las(filename="smrf_test.las").pipeline(points)
+        ground = np.where(pdal_points["Classification"]==2)
+        non_ground = np.where(pdal_points["Classification"]!=2)
+        pdal_points = np.delete(pdal_points, ground)
+        x = pdal_points["X"]
+        y = pdal_points["Y"]
+        z = pdal_points["Z"]
+        points = np.vstack((x, y, z)).T
+        #pipe = pdal.Writer.las(filename="smrf_test.las").pipeline(pdal_points)
         #pipe.execute()
-        pdal_points = points
-        points = seg_points
 
+        ground = np.array(ground)
+        non_ground = np.array(non_ground)
+        ground = np.ravel(ground)
+        non_ground = np.ravel(non_ground)
         end = time.time()
         print(f'SMRF algorithm is completed in {end - start:.2f} seconds. The filtered non-ground cloud contains {points.shape[0]} points.\n')
-        return points, np.asarray(non_ground), np.asarray(ground), pdal_points
+        return points, non_ground, ground, pdal_points
 
     def segment(self, points: np.ndarray, text_prompt: str = None, image_path: str = 'raster.tif', labels_path: str = 'labeled.tif') -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -428,7 +435,27 @@ class SamLidar:
 
         print(f'Segmentation is completed in {end - start:.2f} seconds. Number of instances: {np.max(segmented_image)}\n')
         return segment_ids, segmented_image, image_rgb
+  
+    
+    def grouping(self, pdal_points: np.ndarray, segment_ids: List[int]) -> np.ndarray:
+        
+        print(segment_ids[:10])
+        segment_ids = np.array(segment_ids)
+        breakpoint()
+        merged = np.concatenate((pdal_points, segment_ids))
+        print(merged[1])
+        breakpoint()
+        pipeline = pdal.Pipeline(arrays=[pdal_points])
+        groupby = pdal.Filter.groupby(dimension="segment_ids")
+        filters = [groupby, ]
+        
+        for f in filters:
+            pipeline = pipeline | f
 
+        count = pipeline.execute()
+
+        pdal_points = pipeline.arrays[0]
+        return pdal_points
 
     def write(self, points: np.ndarray, segment_ids: np.ndarray, non_ground: np.ndarray = None, ground: np.ndarray = None, save_path: str = 'segmented.las') -> None:
         """
@@ -464,10 +491,12 @@ class SamLidar:
         lidar = laspy.LasData(header=header)
 
         if ground is not None:
-            indices = np.concatenate((non_ground, ground))
+            indices = np.append(non_ground, ground)
+            breakpoint()
             lidar.xyz = points[indices]
             segment_ids = np.append(segment_ids, np.full(len(ground), -1))
             lidar.add_extra_dim(laspy.ExtraBytesParams(name="segment_id", type=np.int32))
+            breakpoint()
             lidar.segment_id = segment_ids
         else:
             lidar.xyz = points
