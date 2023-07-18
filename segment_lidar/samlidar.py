@@ -10,8 +10,8 @@ from matplotlib.pyplot import cla
 from regex import F
 import torch
 import numpy as np
-from numpy.lib.recfunctions import structured_to_unstructured
-from numpy.lib.recfunctions import unstructured_to_structured
+from numpy.lib.recfunctions import structured_to_unstructured, unstructured_to_structured
+from numpy.lib.recfunctions import append_fields
 from numpy.lib import recfunctions as rfn
 import supervision as sv
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
@@ -424,16 +424,31 @@ class SamLidar:
     
     def featureFilter(self, points_grouped: np.ndarray) -> np.ndarray:
         breakpoint()
-        cov = pdal.Filter.covariancefeatures(feature_set="Scattering,Planarity,Verticality")
-        eigen = pdal.Filter.
-        filters = [cov]
+        cov = pdal.Filter.covariancefeatures(feature_set="Dimensionality")
+        eigen = pdal.Filter.eigenvalues()
+        filters = [cov, eigen]
+        num =0
         points_filtered = []
-        for arr in points_grouped:
-            filtered = SamLidar.applyFilters(self, arr, filters)
-            points_filtered = points_filtered.append(filtered)
-            breakpoint()
+        features = ['Linearity', 'Planarity', 'Scattering', 'Verticality', 'Eigenvalue0', 'Eigenvalue1', 'Eigenvalue2']
+        for array in points_grouped:
+            if len(array) >= 10 and np.mean(array['Classification']) != 2:
+                filtered = SamLidar.applyFilters(self, array, filters)
+                for col in features:
+                    filtered[col] = np.full(len(filtered), np.median(filtered[col]))
+                pipe = pdal.Writer.copc(filename=f"tests/filters_test{num}.copc.laz", forward="all").pipeline(filtered)
+                pipe.execute()
+                points_filtered.append(filtered)
+                num+=1
+            else:
+                for col in features:
+                    a = np.full(array.shape[0], 0, dtype=[(col,'<f8')])
+                    array = rfn.merge_arrays((array, a), flatten=True)
+                breakpoint()
+                print("test")
         breakpoint()
-        return filtered
+        print(num)
+        breakpoint()
+        return points_filtered
 
 
     def write(self, points: np.ndarray, segment_ids: np.ndarray, non_ground: np.ndarray = None, ground: np.ndarray = None, save_path: str = 'segmented.las') -> None:
