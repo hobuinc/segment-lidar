@@ -7,3 +7,4 @@ segment-geospatial
 rasterio
 laspy
 laszip
+pdal
