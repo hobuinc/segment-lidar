@@ -422,8 +422,7 @@ class SamLidar:
 
         return points_grouped
     
-    def featureFilter(self, points_grouped: np.ndarray) -> np.ndarray:
-        breakpoint()
+    def featureFilter(self, points_grouped: np.ndarray, file) -> np.ndarray:
         cov = pdal.Filter.covariancefeatures(feature_set="Dimensionality")
         eigen = pdal.Filter.eigenvalues()
         filters = [cov, eigen]
@@ -435,19 +434,31 @@ class SamLidar:
                 filtered = SamLidar.applyFilters(self, array, filters)
                 for col in features:
                     filtered[col] = np.full(len(filtered), np.median(filtered[col]))
-                pipe = pdal.Writer.copc(filename=f"tests/filters_test{num}.copc.laz", forward="all").pipeline(filtered)
-                pipe.execute()
+                #pipe = pdal.Writer.las(filename=f"tests/filters_test{num}.las", forward="all", extra_dims="all").pipeline(filtered)
+                #pipe = pdal.Writer.copc(filename=f"tests/filters_test{num}.copc.laz", forward="all").pipeline(filtered)
+                #pipe.execute()
                 points_filtered.append(filtered)
                 num+=1
-            else:
-                for col in features:
-                    a = np.full(array.shape[0], 0, dtype=[(col,'<f8')])
-                    array = rfn.merge_arrays((array, a), flatten=True)
-                breakpoint()
-                print("test")
+            # else:
+            #     for col in features:
+            #         a = np.full(array.shape[0], 0, dtype=[(col,'<f8')])
+            #         array = rfn.merge_arrays((array, a), flatten=True)
+            #     points_filtered.append(array)
+            #     print("test")
+            break
+        # points_filtered = np.concatenate(points_filtered)
+        breakpoint()
+        array_pipeline = pdal.Pipeline(None, [points_filtered])
+        writer = pdal.Writer.copc(filename=f"tests/filters_{file}.copc.laz")
+
+        # writer = pdal.Writer.las(filename=f"tests/filters_{file}.las",  extra_dims="all", minor_version=4)
+        p = array_pipeline | writer
+
+        p.execute()
+        #pipe = pdal.Writer.copc(filename=f"tests/filters_{file}.copc.laz", forward="all").pipeline(None, [points_filtered])
+        #pipe.execute()
         breakpoint()
         print(num)
-        breakpoint()
         return points_filtered
 
 
