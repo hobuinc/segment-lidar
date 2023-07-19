@@ -46,35 +46,6 @@ classification_fields = (
 )
 classification_fields_set = set(classification_fields)
 
-# file formats supported
-pdal_formats = set({".laz", ".las", ".ply", ".pcd", ".xyz", ".pts", ".txt", ".csv", ".asc", ".e57"})
-npy_formats = set({".npy"})
-formats = pdal_formats.copy()
-formats.update(npy_formats)
-
-# point cloud fields that needs to be casted/checked
-position_fields = (
-        ('X', 'Y', 'Z'), 
-        ('x', 'y', 'z')
-    )
-position_fields_set = set(np.concatenate(position_fields).flat)
-color_fields = (
-    ('Red', 'Green', 'Blue'), 
-    ('red', 'green', 'blue'), 
-    ('red255', 'green255', 'blue255'), 
-    ('r', 'g', 'b'), 
-    ('R', 'G', 'B')
-)
-color_fields_set = set(np.concatenate(color_fields).flat)
-intensity_fields = (
-    ('Intensity'), ('intensity'), ('i'), ('I')
-)
-intensity_fields_set = set(intensity_fields)
-classification_fields = (
-    ('Classification'), ('classification'), ('c'), ('C')
-)
-classification_fields_set = set(classification_fields)
-
 def cloud_to_image(points: np.ndarray, minx: float, maxx: float, miny: float, maxy: float, resolution: float) -> np.ndarray:
     """
     Converts a point cloud to an image.
@@ -385,22 +356,27 @@ class SamLidar:
         start = time.time()
         print(f'Applying SMRF algorithm...')
         smrf = pdal.Filter.smrf()
-        reclass = pdal.Filter.assign('Classification = 0')
+        reclass = pdal.Filter.assign(value='Classification = 0')
         filter_list = [reclass, smrf]
-        points = SamLidar.applyFilters(self, pdal_points, filter_list)
-        print(points)
-        breakpoint()
-        ground = []
-        ground_index = -1
-        non_ground = []
-        non_ground_index = -1
-        for point in points:
-            if points
+        pdal_points = SamLidar.applyFilters(self, pdal_points, filter_list)
+        
+        ground = np.where(pdal_points["Classification"]==2)
+        non_ground = np.where(pdal_points["Classification"]!=2)
+        #pdal_points = np.delete(pdal_points, ground)
+        x = pdal_points["X"]
+        y = pdal_points["Y"]
+        z = pdal_points["Z"]
+        points = np.vstack((x, y, z)).T
+        points = np.delete(points, ground, 0)
 
-
+        ground = np.array(ground)
+        non_ground = np.array(non_ground)
+        ground = np.ravel(ground)
+        non_ground = np.ravel(non_ground)
         end = time.time()
         print(f'SMRF algorithm is completed in {end - start:.2f} seconds. The filtered non-ground cloud contains {points.shape[0]} points.\n')
-        return points#, non_ground, ground
+        return points, non_ground, ground, pdal_points #structured_to_unstructured(pdal_points)
+
 
     def segment(self, points: np.ndarray, text_prompt: str = None, image_path: str = 'raster.tif', labels_path: str = 'labeled.tif') -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -493,8 +469,6 @@ class SamLidar:
 
         print(f'Segmentation is completed in {end - start:.2f} seconds. Number of instances: {np.max(segmented_image)}\n')
         return segment_ids, segmented_image, image_rgb
-<<<<<<< Updated upstream
-=======
   
     
     #Groups each Segmentation by its segment_id
@@ -509,11 +483,7 @@ class SamLidar:
         merged = rfn.merge_arrays((points_ordered, temp), flatten=True)
         
         merged['segment_id'] = segment_ids
-        #pdal_points = np.sort(pdal_points, order="seg_id")
-
-        #unique=np.unique(pdal_points['seg_id'])
-        #grouped_arrays = np.split
-
+        
         groupby = pdal.Filter.groupby(dimension="segment_id")
         filters = [groupby]
         
@@ -545,17 +515,12 @@ class SamLidar:
                 points_filtered.append(filtered)
                 breakpoint()
                 num+=1
-            else:
-                for col in features:
-                    a = np.full(array.shape[0], 0, dtype=[(col,np.float64)])
-                    array = rfn.merge_arrays((array, a), flatten=True)
                 breakpoint()
                 print("test")
         
         print(num)
         breakpoint()
         return points_filtered
->>>>>>> Stashed changes
 
 
     def write(self, points: np.ndarray, segment_ids: np.ndarray, non_ground: np.ndarray = None, ground: np.ndarray = None, save_path: str = 'segmented.las') -> None:
@@ -606,12 +571,7 @@ class SamLidar:
 
         end = time.time()
         print(f'Writing is completed in {end - start:.2f} seconds.\n')
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
         return None
-=======
-=======
->>>>>>> Stashed changes
     
     
     def write_pdal(self, points: np.ndarray, points_filtered: np.ndarray, segment_ids: np.ndarray, non_ground: Optional[np.ndarray] = None, ground: Optional[np.ndarray] = None, save_path: str = 'segmented.laz', dtypes: Optional[np.dtype] = None):
@@ -709,9 +669,4 @@ class SamLidar:
         r = p.execute()
         
         end = time.time()
-<<<<<<< Updated upstream
         print(f'Writing is completed in {end - start:.2f} seconds.\n')
->>>>>>> Stashed changes
-=======
-        print(f'Writing is completed in {end - start:.2f} seconds.\n')
->>>>>>> Stashed changes
