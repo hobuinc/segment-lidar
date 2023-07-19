@@ -46,6 +46,35 @@ classification_fields = (
 )
 classification_fields_set = set(classification_fields)
 
+# file formats supported
+pdal_formats = set({".laz", ".las", ".ply", ".pcd", ".xyz", ".pts", ".txt", ".csv", ".asc", ".e57"})
+npy_formats = set({".npy"})
+formats = pdal_formats.copy()
+formats.update(npy_formats)
+
+# point cloud fields that needs to be casted/checked
+position_fields = (
+        ('X', 'Y', 'Z'), 
+        ('x', 'y', 'z')
+    )
+position_fields_set = set(np.concatenate(position_fields).flat)
+color_fields = (
+    ('Red', 'Green', 'Blue'), 
+    ('red', 'green', 'blue'), 
+    ('red255', 'green255', 'blue255'), 
+    ('r', 'g', 'b'), 
+    ('R', 'G', 'B')
+)
+color_fields_set = set(np.concatenate(color_fields).flat)
+intensity_fields = (
+    ('Intensity'), ('intensity'), ('i'), ('I')
+)
+intensity_fields_set = set(intensity_fields)
+classification_fields = (
+    ('Classification'), ('classification'), ('c'), ('C')
+)
+classification_fields_set = set(classification_fields)
+
 def cloud_to_image(points: np.ndarray, minx: float, maxx: float, miny: float, maxy: float, resolution: float) -> np.ndarray:
     """
     Converts a point cloud to an image.
@@ -578,8 +607,11 @@ class SamLidar:
         end = time.time()
         print(f'Writing is completed in {end - start:.2f} seconds.\n')
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
         return None
 =======
+=======
+>>>>>>> Stashed changes
     
     
     def write_pdal(self, points: np.ndarray, points_filtered: np.ndarray, segment_ids: np.ndarray, non_ground: Optional[np.ndarray] = None, ground: Optional[np.ndarray] = None, save_path: str = 'segmented.laz', dtypes: Optional[np.dtype] = None):
@@ -677,5 +709,9 @@ class SamLidar:
         r = p.execute()
         
         end = time.time()
+<<<<<<< Updated upstream
+        print(f'Writing is completed in {end - start:.2f} seconds.\n')
+>>>>>>> Stashed changes
+=======
         print(f'Writing is completed in {end - start:.2f} seconds.\n')
 >>>>>>> Stashed changes
