@@ -2,11 +2,19 @@
 # Author : Anass Yarroudh (ayarroudh@uliege.be), Geomatics Unit of ULiege
 # This file is distributed under the BSD-3 licence. See LICENSE file for complete text of the license.
 
+from cProfile import label
 import os
+from turtle import color, pos
 import CSF
 import time
+from typing import Dict, Optional, Set, cast
+from matplotlib.pyplot import cla
+from regex import F
 import torch
 import numpy as np
+from numpy.lib.recfunctions import structured_to_unstructured
+from numpy.lib.recfunctions import unstructured_to_structured
+from numpy.lib import recfunctions as rfn
 import supervision as sv
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 from samgeo import SamGeo
@@ -14,8 +22,8 @@ from samgeo.text_sam import LangSAM
 from typing import List, Tuple
 import rasterio
 import laspy
-import cv2
 import pdal
+import cv2
 
 # file formats supported
 pdal_formats = set({".laz", ".las", ".ply", ".pcd", ".xyz", ".pts", ".txt", ".csv", ".asc", ".e57"})
@@ -293,18 +301,20 @@ class SamLidar:
         breakpoint()
         return (pcd_casted.dtype, structured_to_unstructured(pcd_casted), pcd_casted)
 
-    def applyFilters(self, pdal_points: np.ndarray, filters=[]) -> np.ndarray:
-        print(pdal_points)
+    def applyFilters(self, pdal_points: np.ndarray, filters=[], multi_array=False) -> np.ndarray:
         pipeline = pdal.Pipeline(arrays=[pdal_points])
         for f in filters:
             pipeline = pipeline | f
 
         count = pipeline.execute()
-        if len(pipeline.arrays) > 1:
-            raise Exception("the array count was not 1!")
+        if multi_array==False:
+            if len(pipeline.arrays) > 1:
+                raise Exception("the array count was not 1!")
+            pdal_points = pipeline.arrays[0]
+        else:
+            pdal_points = pipeline.arrays
 
-        pdal_points = pipeline.arrays[0]
-        print(pdal_points)
+
         return pdal_points
     '''
     def csf(self, points: np.ndarray, class_threshold: float = 0.5, cloth_resolution: float = 0.2, iterations: int = 500, slope_smooth: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -359,7 +369,11 @@ class SamLidar:
         reclass = pdal.Filter.assign(value='Classification = 0')
         filter_list = [reclass, smrf]
         pdal_points = SamLidar.applyFilters(self, pdal_points, filter_list)
-        
+        #print('reclassed',points)
+        #points = SamLidar.applyFilters(self, points, [smrf])
+        #print('smrfed',points)
+        #pipeline = pdal.Writer.las(filename="ground_test.las").pipeline(points)
+        #pipeline.execute()
         ground = np.where(pdal_points["Classification"]==2)
         non_ground = np.where(pdal_points["Classification"]!=2)
         #pdal_points = np.delete(pdal_points, ground)
@@ -368,6 +382,10 @@ class SamLidar:
         z = pdal_points["Z"]
         points = np.vstack((x, y, z)).T
         points = np.delete(points, ground, 0)
+        #pipe = pdal.Writer.las(filename="smrf_test.las").pipeline(pdal_points)
+        #pipe.execute()
+        #dtypes = pdal_points.dtype
+        #fields = tuple(dtypes.names)
 
         ground = np.array(ground)
         non_ground = np.array(non_ground)
@@ -376,7 +394,6 @@ class SamLidar:
         end = time.time()
         print(f'SMRF algorithm is completed in {end - start:.2f} seconds. The filtered non-ground cloud contains {points.shape[0]} points.\n')
         return points, non_ground, ground, pdal_points #structured_to_unstructured(pdal_points)
-
 
     def segment(self, points: np.ndarray, text_prompt: str = None, image_path: str = 'raster.tif', labels_path: str = 'labeled.tif') -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -489,15 +506,13 @@ class SamLidar:
         
         points_grouped = SamLidar.applyFilters(self, merged, filters, multi_array=True)
       
-        
         return points_grouped
     
     
     #Adds PDAL Dimesionality Data Types to the Segments, with functionality to output them individually to las/laz files
     #Each Data Type is the average of that Segment
-    
-    def featureFilter(self, points_grouped: np.ndarray, *save_path) -> np.ndarray:
-        breakpoint()
+
+    def featureFilter(self, points_grouped: np.ndarray, file, *save_path) -> np.ndarray:
         cov = pdal.Filter.covariancefeatures(feature_set="Dimensionality")
         eigen = pdal.Filter.eigenvalues()
         filters = [cov, eigen]
@@ -509,20 +524,36 @@ class SamLidar:
                 filtered = SamLidar.applyFilters(self, array, filters)
                 for col in features:
                     filtered[col] = np.full(len(filtered), np.median(filtered[col]))
-                if save_path != None:
-                    pipe = pdal.Writer.copc(filename=f"tests/filters_test{num}.copc.laz", forward="all").pipeline(filtered)
-                    pipe.execute()
+                    if save_path != None:
+                        pipe = pdal.Writer.copc(filename=f"tests/filters_test{num}.copc.laz", forward="all").pipeline(filtered)
+                        pipe.execute()
+                #pipe = pdal.Writer.las(filename=f"tests/filters_test{num}.las", forward="all", extra_dims="all").pipeline(filtered)
+                #pipe = pdal.Writer.copc(filename=f"tests/filters_test{num}.copc.laz", forward="all").pipeline(filtered)
+                #pipe.execute()
                 points_filtered.append(filtered)
-                breakpoint()
                 num+=1
-                breakpoint()
-                print("test")
-        
-        print(num)
+            # else:
+            #     for col in features:
+            #         a = np.full(array.shape[0], 0, dtype=[(col,'<f8')])
+            #         array = rfn.merge_arrays((array, a), flatten=True)
+            #     points_filtered.append(array)
+            #     print("test")
+            break
+        # points_filtered = np.concatenate(points_filtered)
         breakpoint()
+        array_pipeline = pdal.Pipeline(None, [points_filtered])
+        writer = pdal.Writer.copc(filename=f"tests/filters_{file}.copc.laz")
+
+        # writer = pdal.Writer.las(filename=f"tests/filters_{file}.las",  extra_dims="all", minor_version=4)
+        p = array_pipeline | writer
+
+        p.execute()
+        #pipe = pdal.Writer.copc(filename=f"tests/filters_{file}.copc.laz", forward="all").pipeline(None, [points_filtered])
+        #pipe.execute()
+        breakpoint()
+        print(num)
         return points_filtered
-
-
+    
     def write(self, points: np.ndarray, segment_ids: np.ndarray, non_ground: np.ndarray = None, ground: np.ndarray = None, save_path: str = 'segmented.las') -> None:
         """
         Writes the segmented point cloud data to a LAS/LAZ file.
