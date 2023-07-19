@@ -22,6 +22,9 @@ import rasterio
 import laspy
 import pdal
 import cv2
+import pandas as pd
+import pyarrow as pa
+import pyarrow.feather as ft
 
 def cloud_to_image(points: np.ndarray, minx: float, maxx: float, miny: float, maxy: float, resolution: float) -> np.ndarray:
     """
@@ -434,31 +437,40 @@ class SamLidar:
                 filtered = SamLidar.applyFilters(self, array, filters)
                 for col in features:
                     filtered[col] = np.full(len(filtered), np.median(filtered[col]))
+                temp = np.full(filtered.shape[0], np.mean(filtered['NumberOfReturns']), dtype=[('meanNumReturns', '<f8')])
+                filtered = rfn.merge_arrays((filtered, temp), flatten =True)
                 #pipe = pdal.Writer.las(filename=f"tests/filters_test{num}.las", forward="all", extra_dims="all").pipeline(filtered)
                 #pipe = pdal.Writer.copc(filename=f"tests/filters_test{num}.copc.laz", forward="all").pipeline(filtered)
                 #pipe.execute()
                 points_filtered.append(filtered)
                 num+=1
-            # else:
-            #     for col in features:
-            #         a = np.full(array.shape[0], 0, dtype=[(col,'<f8')])
-            #         array = rfn.merge_arrays((array, a), flatten=True)
-            #     points_filtered.append(array)
-            #     print("test")
-            break
-        # points_filtered = np.concatenate(points_filtered)
+            else:
+                for col in features:
+                    a = np.full(array.shape[0], 0, dtype=[(col,'<f8')])
+                    array = rfn.merge_arrays((array, a), flatten=True)
+                temp = np.full(array.shape[0], np.mean(array['NumberOfReturns']), dtype=[('meanNumReturns', '<f8')])
+                array = rfn.merge_arrays((array, temp), flatten =True)
+                points_filtered.append(array)
+                print("test")
+        points_filtered = np.concatenate(points_filtered)
         breakpoint()
+        return points_filtered
+
+    def classify(self, points_filtered):
+        if np.ptp(points_filtered['NumberOfReturns']) == 0:
+            veg = np.where(points_filtered['Scattering']>0.35 and points_filtered['Classification'] !=2)
+        else:
+            veg = np.where(points_filtered['Scattering']>0.3 and points_filtered['meanNumReturns']>2 and points_filtered['Classification'] ==1)
+        veg = np.array(veg)
+        veg = np.ravel(veg)
+        np.put(points_filtered['Classification'], veg, 4)
+        breakpoint()
+        built = np.where(points_filtered['Scattering']>0.3 and points_filtered['meanNumReturns']>2 and points_filtered['Classification'] ==1)
         array_pipeline = pdal.Pipeline(None, [points_filtered])
-        writer = pdal.Writer.copc(filename=f"tests/filters_{file}.copc.laz")
-
-        # writer = pdal.Writer.las(filename=f"tests/filters_{file}.las",  extra_dims="all", minor_version=4)
+        writer = pdal.Writer.copc(filename=f"tests/TEST1filters_{file}.copc.laz")
         p = array_pipeline | writer
-
         p.execute()
-        #pipe = pdal.Writer.copc(filename=f"tests/filters_{file}.copc.laz", forward="all").pipeline(None, [points_filtered])
-        #pipe.execute()
         breakpoint()
-        print(num)
         return points_filtered
 
 
