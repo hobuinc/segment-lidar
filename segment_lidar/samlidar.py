@@ -371,15 +371,16 @@ class SamLidar:
 
         return points, np.asarray(non_ground), np.asarray(ground)
     
-    """
-    Applies the SMRF (Simple Morphological Filter) algorithm to filter ground points in a point cloud.
-
-    :param pdal_points: The input point cloud as a NumPy array, where each row represents a point with x, y, z coordinates.
-    :type points: np.ndarray
-    :return: A tuple containing three arrays: the filtered point cloud, non-ground (filtered) points indinces and ground points indices.
-    :rtype: Tuple[np.ndarray, np.ndarray, np.ndarray]
-    """
+   
     def smrf(self, pdal_points: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Applies the SMRF (Simple Morphological Filter) algorithm to filter ground points in a point cloud.
+
+        :param pdal_points: The input point cloud as a NumPy array, where each row represents a point with x, y, z coordinates.
+        :type points: np.ndarray
+        :return: A tuple containing three arrays: the filtered point cloud, non-ground (filtered) points indinces and ground points indices.
+        :rtype: Tuple[np.ndarray, np.ndarray, np.ndarray]
+        """
         start = time.time()
         print(f'Applying SMRF algorithm...')
         smrf = pdal.Filter.smrf()
