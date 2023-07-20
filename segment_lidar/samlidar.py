@@ -577,6 +577,16 @@ class SamLidar:
         return points_filtered
 
     def classify(self, points_filtered, file):
+        """
+        Classifies the Point Cloud Data using the Dimesionality Data Types.
+
+        :param points_filtered: The input point cloud data as a NumPy array after getting Dimensionality Data Types.
+        :type points_filtered: np.ndarray
+        :param file: Name of input file without extension
+        :type file: string
+        :return: points_filtered
+        :rtype: np.ndarray
+        """ 
         if np.ptp(points_filtered['NumberOfReturns']) == 0:
             veg = np.where(points_filtered['Scattering']>0.35 and points_filtered['Classification'] !=2)
         else:
