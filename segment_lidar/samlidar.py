@@ -3,10 +3,16 @@
 # This file is distributed under the BSD-3 licence. See LICENSE file for complete text of the license.
 
 import os
-import CSF
 import time
 import torch
+from typing import Dict, Optional, Set, cast
+from matplotlib.pyplot import cla
+from regex import F
+import torch
 import numpy as np
+from numpy.lib.recfunctions import structured_to_unstructured, unstructured_to_structured
+from numpy.lib.recfunctions import append_fields
+from numpy.lib import recfunctions as rfn
 import supervision as sv
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 from samgeo import SamGeo
@@ -14,8 +20,11 @@ from samgeo.text_sam import LangSAM
 from typing import List, Tuple
 import rasterio
 import laspy
+import pdal
 import cv2
-
+import pandas as pd
+import pyarrow as pa
+import pyarrow.feather as ft
 
 def cloud_to_image(points: np.ndarray, minx: float, maxx: float, miny: float, maxy: float, resolution: float) -> np.ndarray:
     """
@@ -187,7 +196,7 @@ class SamLidar:
 
 
 
-    def read(self, path: str, classification: int = None) -> np.ndarray:
+    def read(self, path: str, classification: int = None) -> Tuple[np.ndarray, np.ndarray]:
         """
         Reads a point cloud from a file and returns it as a NumPy array.
 
@@ -216,6 +225,12 @@ class SamLidar:
         if extension == '.npy':
             points = np.load(path)
         elif extension in ['.laz', '.las']:
+            reader = pdal.Reader.las(filename=path)
+            pipeline = reader.pipeline()
+        
+            count = pipeline.execute()
+            pdal_points = pipeline.arrays[0]
+
             las = laspy.read(path)
             if classification == None:
                 print(f'- Classification value is not provided. Reading all points...')
@@ -240,49 +255,49 @@ class SamLidar:
             else:
                 print(f'- RGB values are not provided. Reading only XYZ values...')
                 points = np.vstack((pcd.x, pcd.y, pcd.z)).transpose()
+            
 
         end = time.time()
         print(f'File reading is completed in {end - start:.2f} seconds. The point cloud contains {points.shape[0]} points.\n')
-        return points
+        return points, pdal_points
+
+    def applyFilters(self, pdal_points: np.ndarray, filters=[], multi_array=False) -> np.ndarray:
+        pipeline = pdal.Pipeline(arrays=[pdal_points])
+        for f in filters:
+            pipeline = pipeline | f
+
+        count = pipeline.execute()
+        if multi_array==False:
+            if len(pipeline.arrays) > 1:
+                raise Exception("the array count was not 1!")
+            pdal_points = pipeline.arrays[0]
+        else:
+            pdal_points = pipeline.arrays
 
 
-    def csf(self, points: np.ndarray, class_threshold: float = 0.5, cloth_resolution: float = 0.2, iterations: int = 500, slope_smooth: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Applies the CSF (Cloth Simulation Filter) algorithm to filter ground points in a point cloud.
+        return pdal_points
 
-        :param points: The input point cloud as a NumPy array, where each row represents a point with x, y, z coordinates.
-        :type points: np.ndarray
-        :param class_threshold: The threshold value for classifying points as ground/non-ground, defaults to 0.5.
-        :type class_threshold: float, optional
-        :param cloth_resolution: The resolution value for cloth simulation, defaults to 0.2.
-        :type cloth_resolution: float, optional
-        :param iterations: The number of iterations for the CSF algorithm, defaults to 500.
-        :type iterations: int, optional
-        :param slope_smooth: A boolean indicating whether to enable slope smoothing, defaults to False.
-        :type slope_smooth: bool, optional
-        :return: A tuple containing three arrays: the filtered point cloud, non-ground (filtered) points indinces and ground points indices.
-        :rtype: Tuple[np.ndarray, np.ndarray, np.ndarray]
-        """
+    def smrf(self, pdal_points: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         start = time.time()
-        print(f'Applying CSF algorithm...')
-        csf = CSF.CSF()
-        csf.params.bSloopSmooth = slope_smooth
-        csf.params.cloth_resolution = cloth_resolution
-        csf.params.interations = iterations
-        csf.params.class_threshold = class_threshold
-        csf.setPointCloud(points[:, :3])
-        ground = CSF.VecInt()
-        non_ground = CSF.VecInt()
-        csf.do_filtering(ground, non_ground)
-
-        points = points[non_ground, :]
-        os.remove('cloth_nodes.txt')
-
+        print(f'Applying SMRF algorithm...')
+        smrf = pdal.Filter.smrf()
+        reclass = pdal.Filter.assign(value='Classification = 0')
+        filter_list = [reclass, smrf]
+        pdal_points = SamLidar.applyFilters(self, pdal_points, filter_list)
+        ground = np.where(pdal_points["Classification"]==2)
+        non_ground = np.where(pdal_points["Classification"]!=2)
+        x = pdal_points["X"]
+        y = pdal_points["Y"]
+        z = pdal_points["Z"]
+        points = np.vstack((x, y, z)).T
+        points = np.delete(points, ground, 0)
+        ground = np.array(ground)
+        non_ground = np.array(non_ground)
+        ground = np.ravel(ground)
+        non_ground = np.ravel(non_ground)
         end = time.time()
-        print(f'CSF algorithm is completed in {end - start:.2f} seconds. The filtered non-ground cloud contains {points.shape[0]} points.\n')
-
-        return points, np.asarray(non_ground), np.asarray(ground)
-
+        print(f'SMRF algorithm is completed in {end - start:.2f} seconds. The filtered non-ground cloud contains {points.shape[0]} points.\n')
+        return points, non_ground, ground, pdal_points #structured_to_unstructured(pdal_points)
 
     def segment(self, points: np.ndarray, text_prompt: str = None, image_path: str = 'raster.tif', labels_path: str = 'labeled.tif') -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -375,6 +390,72 @@ class SamLidar:
 
         print(f'Segmentation is completed in {end - start:.2f} seconds. Number of instances: {np.max(segmented_image)}\n')
         return segment_ids, segmented_image, image_rgb
+  
+    
+    def grouping(self, pdal_points: np.ndarray, segment_ids: np.ndarray, ground, non_ground) -> np.ndarray:
+        #add support for ground = none
+        if ground is not None:
+            segment_ids = np.append(segment_ids, np.full(len(ground), -1))
+        
+        indices = np.append(non_ground, ground)
+        points_ordered = np.take(pdal_points, indices)
+        temp = np.full(points_ordered.shape[0], 1, dtype=[('seg_id', 'i4')])
+        merged = rfn.merge_arrays((points_ordered, temp), flatten=True)
+        
+        merged['seg_id']=segment_ids
+        groupby = pdal.Filter.groupby(dimension="seg_id")
+        filters = [groupby]
+        points_grouped = SamLidar.applyFilters(self, merged, filters, multi_array=True)
+
+        return points_grouped
+    
+    def featureFilter(self, points_grouped: np.ndarray, file) -> np.ndarray:
+        cov = pdal.Filter.covariancefeatures(feature_set="Dimensionality")
+        eigen = pdal.Filter.eigenvalues()
+        filters = [cov, eigen]
+        num =0
+        points_filtered = []
+        features = ['Linearity', 'Planarity', 'Scattering', 'Verticality', 'Eigenvalue0', 'Eigenvalue1', 'Eigenvalue2']
+        for array in points_grouped:
+            if len(array) >= 10 and np.mean(array['Classification']) != 2:
+                filtered = SamLidar.applyFilters(self, array, filters)
+                for col in features:
+                    filtered[col] = np.full(len(filtered), np.median(filtered[col]))
+                temp = np.full(filtered.shape[0], np.mean(filtered['NumberOfReturns']), dtype=[('meanNumReturns', '<f8')])
+                filtered = rfn.merge_arrays((filtered, temp), flatten =True)
+                points_filtered.append(filtered)
+                num+=1
+            else:
+                for col in features:
+                    a = np.full(array.shape[0], 0, dtype=[(col,'<f8')])
+                    array = rfn.merge_arrays((array, a), flatten=True)
+                temp = np.full(array.shape[0], np.mean(array['NumberOfReturns']), dtype=[('meanNumReturns', '<f8')])
+                array = rfn.merge_arrays((array, temp), flatten =True)
+                points_filtered.append(array)
+                print("test")
+        points_filtered = np.concatenate(points_filtered)
+        array_pipeline = pdal.Pipeline(None, [points_filtered])
+        writer = pdal.Writer.copc(filename=f"tests/12345_{file}.copc.laz")
+        p = array_pipeline | writer
+        p.execute()
+        return points_filtered
+
+    def classify(self, points_filtered, file):
+        if np.ptp(points_filtered['NumberOfReturns']) == 0:
+            veg = np.where(points_filtered['Scattering']>0.35 and points_filtered['Classification'] !=2)
+        else:
+            veg = np.where(points_filtered['Scattering']>0.3 and points_filtered['meanNumReturns']>2 and points_filtered['Classification'] ==1)
+        veg = np.array(veg)
+        veg = np.ravel(veg)
+        np.put(points_filtered['Classification'], veg, 4)
+        breakpoint()
+        built = np.where(points_filtered['Planarity'])
+        array_pipeline = pdal.Pipeline(None, [points_filtered])
+        writer = pdal.Writer.copc(filename=f"tests/TEST1filters_{file}.copc.laz")
+        p = array_pipeline | writer
+        p.execute()
+        breakpoint()
+        return points_filtered
 
 
     def write(self, points: np.ndarray, segment_ids: np.ndarray, non_ground: np.ndarray = None, ground: np.ndarray = None, save_path: str = 'segmented.las') -> None:
@@ -411,7 +492,7 @@ class SamLidar:
         lidar = laspy.LasData(header=header)
 
         if ground is not None:
-            indices = np.concatenate((non_ground, ground))
+            indices = np.append(non_ground, ground)
             lidar.xyz = points[indices]
             segment_ids = np.append(segment_ids, np.full(len(ground), -1))
             lidar.add_extra_dim(laspy.ExtraBytesParams(name="segment_id", type=np.int32))
