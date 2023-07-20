@@ -2,14 +2,19 @@
 # Author : Anass Yarroudh (ayarroudh@uliege.be), Geomatics Unit of ULiege
 # This file is distributed under the BSD-3 licence. See LICENSE file for complete text of the license.
 
+from cProfile import label
 import os
 import time
+from typing import Dict, Optional, Set, cast
+from matplotlib.pyplot import cla
+from regex import F
 import torch
 from typing import Dict, Optional, Set, cast
 from matplotlib.pyplot import cla
 from regex import F
 import torch
 import numpy as np
+import CSF
 from numpy.lib.recfunctions import structured_to_unstructured, unstructured_to_structured
 from numpy.lib.recfunctions import append_fields
 from numpy.lib import recfunctions as rfn
@@ -25,6 +30,36 @@ import cv2
 import pandas as pd
 import pyarrow as pa
 import pyarrow.feather as ft
+
+# file formats supported
+pdal_formats = set({".laz", ".las", ".ply", ".pcd", ".xyz", ".pts", ".txt", ".csv", ".asc", ".e57"})
+npy_formats = set({".npy"})
+formats = pdal_formats.copy()
+formats.update(npy_formats)
+
+# point cloud fields that needs to be casted/checked
+position_fields = (
+        ('X', 'Y', 'Z'), 
+        ('x', 'y', 'z')
+    )
+position_fields_set = set(np.concatenate(position_fields).flat)
+color_fields = (
+    ('Red', 'Green', 'Blue'), 
+    ('red', 'green', 'blue'), 
+    ('red255', 'green255', 'blue255'), 
+    ('r', 'g', 'b'), 
+    ('R', 'G', 'B')
+)
+color_fields_set = set(np.concatenate(color_fields).flat)
+intensity_fields = (
+    ('Intensity'), ('intensity'), ('i'), ('I')
+)
+intensity_fields_set = set(intensity_fields)
+classification_fields = (
+    ('Classification'), ('classification'), ('c'), ('C')
+)
+classification_fields_set = set(classification_fields)
+
 
 def cloud_to_image(points: np.ndarray, minx: float, maxx: float, miny: float, maxy: float, resolution: float) -> np.ndarray:
     """
@@ -196,7 +231,7 @@ class SamLidar:
 
 
 
-    def read(self, path: str, classification: int = None) -> Tuple[np.ndarray, np.ndarray]:
+    def read(self, path: str, classification: Optional[int or list[int] or Tuple[int, ...]] = None) -> Tuple[np.dtype, np.ndarray, np.ndarray]:
         """
         Reads a point cloud from a file and returns it as a NumPy array.
 
@@ -208,60 +243,82 @@ class SamLidar:
         :rtype: np.ndarray
         :raises ValueError: If the input file format is not supported.
         """
+        
         start = time.time()
         extension = os.path.splitext(path)[1]
-        try:
-            if extension not in ['.laz', '.las', '.npy']:
-                raise ValueError(f'The input file format {extension} is not supported.\nThe file format should be [.las/.laz].')
-        except ValueError as error:
-            message = str(error)
-            lines = message.split('\n')
-            print(lines[-2])
-            print(lines[-1])
-            exit()
+        
+        if extension not in formats:
+            try:
+                raise ValueError(f'The input file format {extension} is not supported.\nThe file format should be one of {formats}.')
+            except ValueError as error:
+                message = str(error)
+                lines = message.split('\n')
+                print(lines[-2])
+                print(lines[-1])
+                exit()
 
         print(f'Reading {path}...')
 
-        if extension == '.npy':
-            points = np.load(path)
-        elif extension in ['.laz', '.las']:
-            reader = pdal.Reader.las(filename=path)
-            pipeline = reader.pipeline()
+        pcd: np.ndarray
+        fields: Tuple[str,...] = ()
+        fields_set: Set[str] = set()
         
+        if extension in npy_formats:
+            pcd = np.load(path)
+        else:
+            pipeline = pdal.Pipeline(f"[\"{path}\"]")
             count = pipeline.execute()
-            pdal_points = pipeline.arrays[0]
+            pcd = pipeline.arrays[0]
+        
+        dtypes = pcd.dtype
+        breakpoint()
+        fields = tuple(dtypes.names)
+        fields_set = set(fields)
+        has_position = any(set(c).issubset(fields_set) for c in position_fields)
+        has_color = any(set(c).issubset(fields_set) for c in color_fields)
+        has_intensity = any(set(c).issubset(fields_set) for c in intensity_fields)
+        has_classification = any(set(c).issubset(fields_set) for c in classification_fields)
+        
+        if not has_position:
+            raise ValueError(f'The input file does not contain position values.')
+        if not has_classification and classification is not None:
+            raise ValueError(f'The input file does not contain classification values.')
+        else:
+            for label in fields:
+                if classification is not None and label in classification_fields_set:
+                    for c in cast(tuple[int], classification):
+                        pcd = pcd[pcd[label] == c]
+        if isinstance(classification, int):
+            classification = (classification,)
+        elif isinstance(classification, list):
+            classification = tuple(classification)
 
-            las = laspy.read(path)
-            if classification == None:
-                print(f'- Classification value is not provided. Reading all points...')
-                pcd = las.points
-            else:
-                try:
-                    if hasattr(las, 'classification'):
-                        print(f'- Reading points with classification value {classification}...')
-                        pcd = las.points[las.raw_classification == classification]
-                    else:
-                        raise ValueError(f'The input file does not contain classification values.')
-                except ValueError as error:
-                    message = str(error)
-                    lines = message.split('\n')
-                    print(lines[-2])
-                    print(lines[-1])
-                    exit()
-
-            if hasattr(las, 'red') and hasattr(las, 'green') and hasattr(las, 'blue'):
-                print(f'- Reading RGB values...')
-                points = np.vstack((pcd.x, pcd.y, pcd.z, pcd.red / 255.0, pcd.green / 255.0, pcd.blue / 255.0)).transpose()
-            else:
-                print(f'- RGB values are not provided. Reading only XYZ values...')
-                points = np.vstack((pcd.x, pcd.y, pcd.z)).transpose()
-            
-
+        dtypes_casted = np.dtype([(label, np.float64) if label in position_fields_set or label in color_fields_set or label in intensity_fields_set else (label, dtypes[label]) for label in fields])
+        pcd_casted = pcd.astype(dtypes_casted, copy=True)
+        
+        for label in fields:
+            if label in color_fields_set or label in intensity_fields_set:
+                if dtypes[label] == np.uint8:
+                    pcd_casted[label] /= 255.0
+                elif dtypes[label] == np.uint16:
+                    pcd_casted[label] /= 65535.0
+       
         end = time.time()
-        print(f'File reading is completed in {end - start:.2f} seconds. The point cloud contains {points.shape[0]} points.\n')
-        return points, pdal_points
-
+        print(f'File reading is completed in {end - start:.2f} seconds. The point cloud contains {pcd_casted.shape[0]} points.\n')
+        breakpoint()
+        return (pcd_casted.dtype, structured_to_unstructured(pcd_casted), pcd_casted)
+  
     def applyFilters(self, pdal_points: np.ndarray, filters=[], multi_array=False) -> np.ndarray:
+        """
+        Gives ability to apply PDAL Filters before segmentation such as denoising.
+
+        :param pdal_points: The input point cloud as a NumPy array, where each row represents a point with x, y, z coordinates.
+        :type pdal_points: np.ndarray
+        :param filters: Array of the PDAL filters defined to be applied.
+        :type filters: array
+        :return: The input point cloud as a NumPy array after filters were applied.
+        :rtype: np.ndarray
+        """
         pipeline = pdal.Pipeline(arrays=[pdal_points])
         for f in filters:
             pipeline = pipeline | f
@@ -276,8 +333,62 @@ class SamLidar:
 
 
         return pdal_points
+    
+    def csf(self, points: np.ndarray, class_threshold: float = 0.5, cloth_resolution: float = 0.2, iterations: int = 500, slope_smooth: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Applies the CSF (Cloth Simulation Filter) algorithm to filter ground points in a point cloud.
 
+        :param points: The input point cloud as a NumPy array, where each row represents a point with x, y, z coordinates.
+        :type points: np.ndarray
+        :param class_threshold: The threshold value for classifying points as ground/non-ground, defaults to 0.5.
+        :type class_threshold: float, optional
+        :param cloth_resolution: The resolution value for cloth simulation, defaults to 0.2.
+        :type cloth_resolution: float, optional
+        :param iterations: The number of iterations for the CSF algorithm, defaults to 500.
+        :type iterations: int, optional
+        :param slope_smooth: A boolean indicating whether to enable slope smoothing, defaults to False.
+        :type slope_smooth: bool, optional
+        :return: A tuple containing three arrays: the filtered point cloud, non-ground (filtered) points indinces and ground points indices.
+        :rtype: Tuple[np.ndarray, np.ndarray, np.ndarray]
+        """
+        start = time.time()
+        print(f'Applying CSF algorithm...')
+        csf = CSF.CSF()
+        csf.params.bSloopSmooth = slope_smooth
+        csf.params.cloth_resolution = cloth_resolution
+        csf.params.interations = iterations
+        csf.params.class_threshold = class_threshold
+        csf.setPointCloud(points[:, :3])
+        ground = CSF.VecInt()
+        non_ground = CSF.VecInt()
+        csf.do_filtering(ground, non_ground)
+        print(points)
+        non_ground = np.asarray(non_ground)
+        ground = np.asarray(ground)
+        print("ground:",ground)
+        np.info(ground)
+        print("non ground:",non_ground)
+        np.info(non_ground)
+        breakpoint()
+
+        points = points[non_ground, :]
+        os.remove('cloth_nodes.txt')
+
+        end = time.time()
+        print(f'CSF algorithm is completed in {end - start:.2f} seconds. The filtered non-ground cloud contains {points.shape[0]} points.\n')
+
+        return points, np.asarray(non_ground), np.asarray(ground)
+    
+   
     def smrf(self, pdal_points: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Applies the SMRF (Simple Morphological Filter) algorithm to filter ground points in a point cloud.
+
+        :param pdal_points: The input point cloud as a NumPy array, where each row represents a point with x, y, z coordinates.
+        :type points: np.ndarray
+        :return: A tuple containing three arrays: the filtered point cloud, non-ground (filtered) points indinces and ground points indices.
+        :rtype: Tuple[np.ndarray, np.ndarray, np.ndarray]
+        """
         start = time.time()
         print(f'Applying SMRF algorithm...')
         smrf = pdal.Filter.smrf()
@@ -297,7 +408,7 @@ class SamLidar:
         non_ground = np.ravel(non_ground)
         end = time.time()
         print(f'SMRF algorithm is completed in {end - start:.2f} seconds. The filtered non-ground cloud contains {points.shape[0]} points.\n')
-        return points, non_ground, ground, pdal_points #structured_to_unstructured(pdal_points)
+        return points, non_ground, ground, pdal_points 
 
     def segment(self, points: np.ndarray, text_prompt: str = None, image_path: str = 'raster.tif', labels_path: str = 'labeled.tif') -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -393,23 +504,48 @@ class SamLidar:
   
     
     def grouping(self, pdal_points: np.ndarray, segment_ids: np.ndarray, ground, non_ground) -> np.ndarray:
-        #add support for ground = none
+        """
+        Creates an array with the segments grouped by their segment_id
+    
+        :param pdal_points: The point cloud data as a NumPy array.
+        :type pdal_points: np.ndarray
+        :param segment_ids: NumPy array of the segments.
+        :type segment_ids: np.ndarray
+        :param ground: array that has all the ground points
+        :type ground: array
+        :param non_ground: array that has all the nonground points
+        :type non_ground: array
+        :return: Numpy array that has points grouped by their segment_id.
+        :rtype: np.ndarray 
+        """
         if ground is not None:
             segment_ids = np.append(segment_ids, np.full(len(ground), -1))
         
         indices = np.append(non_ground, ground)
         points_ordered = np.take(pdal_points, indices)
-        temp = np.full(points_ordered.shape[0], 1, dtype=[('seg_id', 'i4')])
+        temp = np.full(points_ordered.shape[0], 1, dtype=[('segment_id', 'i4')])
         merged = rfn.merge_arrays((points_ordered, temp), flatten=True)
         
-        merged['seg_id']=segment_ids
-        groupby = pdal.Filter.groupby(dimension="seg_id")
+        merged['segment_id'] = segment_ids
+        
+        groupby = pdal.Filter.groupby(dimension="segment_id")
         filters = [groupby]
+        
         points_grouped = SamLidar.applyFilters(self, merged, filters, multi_array=True)
-
+      
         return points_grouped
     
     def featureFilter(self, points_grouped: np.ndarray, file) -> np.ndarray:
+        """
+        Adds PDAL Dimesionality Data Types to the Segments.
+    
+        :param points: The input point cloud data as a NumPy array, where each row represents a point with x, y, z coordinates.
+        :type points: np.ndarray
+        :param file: The name of the orginal input file minus extension.
+        :type file: string
+        :return: NumPy that has PDAL Dimesionality Data Types defined with each one being the average of its segment.
+        :rtype: np.ndarray 
+        """
         cov = pdal.Filter.covariancefeatures(feature_set="Dimensionality")
         eigen = pdal.Filter.eigenvalues()
         filters = [cov, eigen]
@@ -441,6 +577,16 @@ class SamLidar:
         return points_filtered
 
     def classify(self, points_filtered, file):
+        """
+        Classifies the Point Cloud Data using the Dimesionality Data Types.
+
+        :param points_filtered: The input point cloud data as a NumPy array after getting Dimensionality Data Types.
+        :type points_filtered: np.ndarray
+        :param file: Name of input file without extension
+        :type file: string
+        :return: points_filtered
+        :rtype: np.ndarray
+        """ 
         if np.ptp(points_filtered['NumberOfReturns']) == 0:
             veg = np.where(points_filtered['Scattering']>0.35 and points_filtered['Classification'] !=2)
         else:
@@ -507,3 +653,101 @@ class SamLidar:
         end = time.time()
         print(f'Writing is completed in {end - start:.2f} seconds.\n')
         return None
+    
+    
+    def write_pdal(self, points: np.ndarray, points_filtered: np.ndarray, segment_ids: np.ndarray, non_ground: Optional[np.ndarray] = None, ground: Optional[np.ndarray] = None, save_path: str = 'segmented.laz', dtypes: Optional[np.dtype] = None):
+        """
+        Writes the segmented point cloud data to any pointcloud format supported by PDAL.
+
+        :param points: The input point cloud data as a NumPy array, where each row represents a point with x, y, z coordinates.
+        :type points: np.ndarray
+        :param segment_ids: The segment IDs corresponding to each point in the point cloud.
+        :type segment_ids: np.ndarray
+        :param non_ground: Optional array of indices for non-ground points in the original point cloud (default: None).
+        :type non_ground: np.ndarray, optional
+        :param ground: Optional array of indices for ground points in the original point cloud (default: None).
+        :type ground: np.ndarray, optional
+        :param save_path: The path to save the segmented LAS/LAZ file (default: 'segmented.laz').
+        :type save_path: str, optional
+        :return: None
+        """
+        start = time.time()
+        
+        if points_filtered != None:
+            points = points_filtered
+
+        extension = os.path.splitext(save_path)[1]
+        try:
+            if extension not in formats:
+                raise ValueError(f'The input file format {extension} is not supported.\nThe file format should be [.las/.laz].')
+        except ValueError as error:
+            message = str(error)
+            lines = message.split('\n')
+            print(lines[-2])
+            print(lines[-1])
+            exit()
+
+        print(f'Writing the segmented point cloud to {save_path}...')
+
+        indices = np.arange(len(points))
+        
+        if ground is not None and non_ground is not None:
+            indices = np.concatenate((non_ground, ground))
+            data = points[indices]
+            segment_ids = np.append(segment_ids, np.full(len(ground), -1))
+        else:
+            data = points[indices]
+        
+        data = np.hstack((data, segment_ids.reshape(-1, 1)))
+        
+        if dtypes is None or dtypes.names is None or len(dtypes.names) == 0:
+            if data.shape[0] == 4:
+                dtypes = np.dtype([('X', np.float64), ('Y', np.float64), ('Z', np.float64), ('segment_id', np.int32)])
+            elif data.shape[0] == 7:
+                dtypes = np.dtype([('X', np.float64), ('Y', np.float64), ('Z', np.float64), ('Red', np.uint16), ('Green', np.uint16), ('Blue', np.uint16), ('segment_id', np.int32)])
+            elif data.shape[0] == 24:
+                dtypes = np.dtype([('X', np.float64), ('Y', np.float64), ('Z', np.float64), ('Red', np.uint16), ('Green', np.uint16), ('Blue', np.uint16), ('Intensity', np.uint16), ('ReturnNumber', np.uint8), ('NumberOfReturns', np.uint8), ('ScanDirectionFlag', np.uint8), ('EdgeOfFlightLine', np.uint8), ('Classification', np.uint8), ('ScanAngleRank', np.float64), ('UserData', np.uint8), ('PointSourceId', np.uint16), ('GpsTime', np.float64), ('segment_id', np.int32), ('Linearity', np.float64), ('Planarity', np.float64), ('Scattering', np.float64), ('Verticality', np.float64), ('Eigenvalue0', np.float64), ('Eigenvalue1', np.float64), ('Eigenvalue2', np.float64)])
+                #('X', np.float64), ('Y', np.float64), ('Z', np.float64), ('Intensity', '<u2'), ('ReturnNumber', 'u1'), ('NumberOfReturns', 'u1'), ('ScanDirectionFlag', 'u1'), ('EdgeOfFlightLine', 'u1'), ('Classification', 'u1'), ('ScanAngleRank', '<f4'), ('UserData', 'u1'), ('PointSourceId', '<u2'), ('GpsTime', np.float64), ('Red', '<u2'), ('Green', '<u2'), ('Blue', '<u2'), ('seg_id', '<i4'), ('Linearity', np.float64), ('Planarity', np.float64), ('Scattering', np.float64), ('Verticality', np.float64), ('Eigenvalue0', np.float64), ('Eigenvalue1', np.float64), ('Eigenvalue2', np.float64)]
+                
+            else:
+                dtype_descriptions = [('X', np.float64), ('Y', np.float64), ('Z', np.float64), ('Red', np.uint16), ('Green', np.uint16), ('Blue', np.uint16)]
+                dtype_descriptions.extend([(f'scalar_{i}', np.float64 if isinstance(i, float) else (np.int64 if isinstance(i, int) else str)) for i in range(data.shape[1] - 7)])
+                dtype_descriptions.append(('segment_id', np.int32))
+                dtypes = np.dtype(dtype_descriptions)
+        dtypes_casted = np.dtype([(label, np.float64) if label in position_fields_set or label in color_fields_set or label in intensity_fields_set else (label, dtypes[label]) for label in dtypes.names]) # type: ignore
+        pcd = unstructured_to_structured(points[indices], dtypes_casted)
+        for label in dtypes.names: # type: ignore
+            if label in color_fields_set:
+                print(f'- Adding color:{label} to the segmented point cloud...')
+                if label[0].lower() == 'r':
+                    pcd['Red'] = (pcd[label] * 65536.0).astype(np.uint16)
+                elif label[0].lower() == 'g':
+                    pcd['Green'] = (pcd[label] * 65536.0).astype(np.uint16)
+                else:
+                    pcd['Blue'] = (pcd[label] * 65536.0).astype(np.uint16)
+            elif label not in position_fields_set:
+                pcd[label] = pcd[label]
+        pcd = pcd.astype(dtypes, copy=True)
+        
+        writer_name = "las"
+        writer_options = {'extra_dims': 'all', 'compression': 'laszip'}
+        if extension == '.las':
+            writer_name = 'las'
+            writer_options = {'extra_dims': 'all'}
+        elif extension in ['.xyz','.txt','.csv','.asc','.pts']:
+            writer_name = 'text'
+            writer_options = {'order': dtypes.names.join(','), 'precision': 14} # type: ignore
+        elif extension == '.ply':
+            writer_name = 'ply'
+            writer_options = {'storage_mode': 'little_endian'}
+        elif extension == '.e57':
+            writer_name = 'e57'
+        elif extension == '.pcd':
+            writer_name = 'pcd'
+            writer_options = {'compression': 'compressed', 'order': dtypes.names.join(','), 'precision': 14} # type: ignore
+            
+        p = getattr(pdal.Writer, writer_name)(filename=save_path, **writer_options).pipeline(pcd)
+        r = p.execute()
+        
+        end = time.time()
+        print(f'Writing is completed in {end - start:.2f} seconds.\n')
