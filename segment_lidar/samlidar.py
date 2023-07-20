@@ -284,24 +284,13 @@ class SamLidar:
         reclass = pdal.Filter.assign(value='Classification = 0')
         filter_list = [reclass, smrf]
         pdal_points = SamLidar.applyFilters(self, pdal_points, filter_list)
-        #print('reclassed',points)
-        #points = SamLidar.applyFilters(self, points, [smrf])
-        #print('smrfed',points)
-        #pipeline = pdal.Writer.las(filename="ground_test.las").pipeline(points)
-        #pipeline.execute()
         ground = np.where(pdal_points["Classification"]==2)
         non_ground = np.where(pdal_points["Classification"]!=2)
-        #pdal_points = np.delete(pdal_points, ground)
         x = pdal_points["X"]
         y = pdal_points["Y"]
         z = pdal_points["Z"]
         points = np.vstack((x, y, z)).T
         points = np.delete(points, ground, 0)
-        #pipe = pdal.Writer.las(filename="smrf_test.las").pipeline(pdal_points)
-        #pipe.execute()
-        #dtypes = pdal_points.dtype
-        #fields = tuple(dtypes.names)
-
         ground = np.array(ground)
         non_ground = np.array(non_ground)
         ground = np.ravel(ground)
@@ -414,11 +403,6 @@ class SamLidar:
         merged = rfn.merge_arrays((points_ordered, temp), flatten=True)
         
         merged['seg_id']=segment_ids
-        #pdal_points = np.sort(pdal_points, order="seg_id")
-
-        #unique=np.unique(pdal_points['seg_id'])
-        #grouped_arrays = np.split
-
         groupby = pdal.Filter.groupby(dimension="seg_id")
         filters = [groupby]
         points_grouped = SamLidar.applyFilters(self, merged, filters, multi_array=True)
@@ -439,9 +423,6 @@ class SamLidar:
                     filtered[col] = np.full(len(filtered), np.median(filtered[col]))
                 temp = np.full(filtered.shape[0], np.mean(filtered['NumberOfReturns']), dtype=[('meanNumReturns', '<f8')])
                 filtered = rfn.merge_arrays((filtered, temp), flatten =True)
-                #pipe = pdal.Writer.las(filename=f"tests/filters_test{num}.las", forward="all", extra_dims="all").pipeline(filtered)
-                #pipe = pdal.Writer.copc(filename=f"tests/filters_test{num}.copc.laz", forward="all").pipeline(filtered)
-                #pipe.execute()
                 points_filtered.append(filtered)
                 num+=1
             else:
@@ -453,10 +434,13 @@ class SamLidar:
                 points_filtered.append(array)
                 print("test")
         points_filtered = np.concatenate(points_filtered)
-        breakpoint()
+        array_pipeline = pdal.Pipeline(None, [points_filtered])
+        writer = pdal.Writer.copc(filename=f"tests/12345_{file}.copc.laz")
+        p = array_pipeline | writer
+        p.execute()
         return points_filtered
 
-    def classify(self, points_filtered):
+    def classify(self, points_filtered, file):
         if np.ptp(points_filtered['NumberOfReturns']) == 0:
             veg = np.where(points_filtered['Scattering']>0.35 and points_filtered['Classification'] !=2)
         else:
@@ -465,7 +449,7 @@ class SamLidar:
         veg = np.ravel(veg)
         np.put(points_filtered['Classification'], veg, 4)
         breakpoint()
-        built = np.where(points_filtered['Scattering']>0.3 and points_filtered['meanNumReturns']>2 and points_filtered['Classification'] ==1)
+        built = np.where(points_filtered['Planarity'])
         array_pipeline = pdal.Pipeline(None, [points_filtered])
         writer = pdal.Writer.copc(filename=f"tests/TEST1filters_{file}.copc.laz")
         p = array_pipeline | writer
