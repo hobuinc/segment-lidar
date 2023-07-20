@@ -302,17 +302,3 @@ if __name__ == '__main__':
     #       the last stage of our pipeline is the writer, and the 'dimension'
     #       option on the writer is what we want to print
     #       print (f"Number of points returned for dimension {dimension}: {results}")
-            #pipelines, cloudpipe = get_pipelines(urls, extents, option, name)
-
-
-
-
-
-# url = "https://s3-us-west-2.amazonaws.com/usgs-lidar-public/WY_SouthCentral_4_2020/ept.json"
-# poly = "()"
-# reader = pdal.Reader.ept(url)
-# pipeline = reader.pipeline()
-# print(pipeline)
-# count = pipeline.execute()
-# breakpoint()
-# print(count)
