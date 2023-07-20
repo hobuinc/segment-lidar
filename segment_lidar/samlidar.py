@@ -4,16 +4,19 @@
 
 from cProfile import label
 import os
-from turtle import color, pos
-import CSF
 import time
 from typing import Dict, Optional, Set, cast
 from matplotlib.pyplot import cla
 from regex import F
 import torch
+from typing import Dict, Optional, Set, cast
+from matplotlib.pyplot import cla
+from regex import F
+import torch
 import numpy as np
-from numpy.lib.recfunctions import structured_to_unstructured
-from numpy.lib.recfunctions import unstructured_to_structured
+import CSF
+from numpy.lib.recfunctions import structured_to_unstructured, unstructured_to_structured
+from numpy.lib.recfunctions import append_fields
 from numpy.lib import recfunctions as rfn
 import supervision as sv
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
@@ -24,6 +27,9 @@ import rasterio
 import laspy
 import pdal
 import cv2
+import pandas as pd
+import pyarrow as pa
+import pyarrow.feather as ft
 
 # file formats supported
 pdal_formats = set({".laz", ".las", ".ply", ".pcd", ".xyz", ".pts", ".txt", ".csv", ".asc", ".e57"})
@@ -53,6 +59,7 @@ classification_fields = (
     ('Classification'), ('classification'), ('c'), ('C')
 )
 classification_fields_set = set(classification_fields)
+
 
 def cloud_to_image(points: np.ndarray, minx: float, maxx: float, miny: float, maxy: float, resolution: float) -> np.ndarray:
     """
@@ -300,17 +307,18 @@ class SamLidar:
         print(f'File reading is completed in {end - start:.2f} seconds. The point cloud contains {pcd_casted.shape[0]} points.\n')
         breakpoint()
         return (pcd_casted.dtype, structured_to_unstructured(pcd_casted), pcd_casted)
-    """
-    Gives ability to apply PDAL Filters before segmentation such as denoising.
-
-    :param pdal_points: The input point cloud as a NumPy array, where each row represents a point with x, y, z coordinates.
-    :type pdal_points: np.ndarray
-    :param filters: Array of the PDAL filters defined to be applied.
-    :type filters: array
-    :return: The input point cloud as a NumPy array after filters were applied.
-    :rtype: np.ndarray
-    """
+  
     def applyFilters(self, pdal_points: np.ndarray, filters=[], multi_array=False) -> np.ndarray:
+        """
+        Gives ability to apply PDAL Filters before segmentation such as denoising.
+
+        :param pdal_points: The input point cloud as a NumPy array, where each row represents a point with x, y, z coordinates.
+        :type pdal_points: np.ndarray
+        :param filters: Array of the PDAL filters defined to be applied.
+        :type filters: array
+        :return: The input point cloud as a NumPy array after filters were applied.
+        :rtype: np.ndarray
+        """
         pipeline = pdal.Pipeline(arrays=[pdal_points])
         for f in filters:
             pipeline = pipeline | f
@@ -394,7 +402,6 @@ class SamLidar:
         z = pdal_points["Z"]
         points = np.vstack((x, y, z)).T
         points = np.delete(points, ground, 0)
-
         ground = np.array(ground)
         non_ground = np.array(non_ground)
         ground = np.ravel(ground)
@@ -496,22 +503,21 @@ class SamLidar:
         return segment_ids, segmented_image, image_rgb
   
     
-    """
-    Creates an array with the segments grouped by their segment_id
+    def grouping(self, pdal_points: np.ndarray, segment_ids: np.ndarray, ground, non_ground) -> np.ndarray:
+        """
+        Creates an array with the segments grouped by their segment_id
     
-    :param pdal_points: The point cloud data as a NumPy array.
-    :type pdal_points: np.ndarray
-    :param segment_ids: NumPy array of the segments.
-    :type segment_ids: np.ndarray
-    :param ground: array that has all the ground points
-    :type ground: array
-    :param non_ground: array that has all the nonground points
-    :type non_ground: array
-    :return: Numpy array that has points grouped by their segment_id.
-    :rtype: np.ndarray 
-    """
-    def grouping(self, pdal_points: np.ndarray, segment_ids: np.ndarray, ground, non_ground)-> np.ndarray:
-        #add support for ground = none
+        :param pdal_points: The point cloud data as a NumPy array.
+        :type pdal_points: np.ndarray
+        :param segment_ids: NumPy array of the segments.
+        :type segment_ids: np.ndarray
+        :param ground: array that has all the ground points
+        :type ground: array
+        :param non_ground: array that has all the nonground points
+        :type non_ground: array
+        :return: Numpy array that has points grouped by their segment_id.
+        :rtype: np.ndarray 
+        """
         if ground is not None:
             segment_ids = np.append(segment_ids, np.full(len(ground), -1))
         
@@ -529,24 +535,23 @@ class SamLidar:
       
         return points_grouped
     
-    """
-    Adds PDAL Dimesionality Data Types to the Segments.
-    
-    :param points: The input point cloud data as a NumPy array, where each row represents a point with x, y, z coordinates.
-    :type points: np.ndarray
-    :param file: The name of the orginal input file minus extension.
-    :type file: string
-    :return: NumPy that has PDAL Dimesionality Data Types defined with each one being the average of its segment.
-    :rtype: np.ndarray 
-    """
     def featureFilter(self, points_grouped: np.ndarray, file) -> np.ndarray:
+        """
+        Adds PDAL Dimesionality Data Types to the Segments.
+    
+        :param points: The input point cloud data as a NumPy array, where each row represents a point with x, y, z coordinates.
+        :type points: np.ndarray
+        :param file: The name of the orginal input file minus extension.
+        :type file: string
+        :return: NumPy that has PDAL Dimesionality Data Types defined with each one being the average of its segment.
+        :rtype: np.ndarray 
+        """
         cov = pdal.Filter.covariancefeatures(feature_set="Dimensionality")
         eigen = pdal.Filter.eigenvalues()
         filters = [cov, eigen]
         num =0
         points_filtered = []
         features = ['Linearity', 'Planarity', 'Scattering', 'Verticality', 'Eigenvalue0', 'Eigenvalue1', 'Eigenvalue2']
-       
         for array in points_grouped:
             if len(array) >= 10 and np.mean(array['Classification']) != 2:
                 filtered = SamLidar.applyFilters(self, array, filters)
@@ -565,9 +570,30 @@ class SamLidar:
                 points_filtered.append(array)
                 print("test")
         points_filtered = np.concatenate(points_filtered)
-        print(num)
+        array_pipeline = pdal.Pipeline(None, [points_filtered])
+        writer = pdal.Writer.copc(filename=f"tests/12345_{file}.copc.laz")
+        p = array_pipeline | writer
+        p.execute()
         return points_filtered
-    
+
+    def classify(self, points_filtered, file):
+        if np.ptp(points_filtered['NumberOfReturns']) == 0:
+            veg = np.where(points_filtered['Scattering']>0.35 and points_filtered['Classification'] !=2)
+        else:
+            veg = np.where(points_filtered['Scattering']>0.3 and points_filtered['meanNumReturns']>2 and points_filtered['Classification'] ==1)
+        veg = np.array(veg)
+        veg = np.ravel(veg)
+        np.put(points_filtered['Classification'], veg, 4)
+        breakpoint()
+        built = np.where(points_filtered['Planarity'])
+        array_pipeline = pdal.Pipeline(None, [points_filtered])
+        writer = pdal.Writer.copc(filename=f"tests/TEST1filters_{file}.copc.laz")
+        p = array_pipeline | writer
+        p.execute()
+        breakpoint()
+        return points_filtered
+
+
     def write(self, points: np.ndarray, segment_ids: np.ndarray, non_ground: np.ndarray = None, ground: np.ndarray = None, save_path: str = 'segmented.las') -> None:
         """
         Writes the segmented point cloud data to a LAS/LAZ file.
@@ -602,7 +628,7 @@ class SamLidar:
         lidar = laspy.LasData(header=header)
 
         if ground is not None:
-            indices = np.concatenate((non_ground, ground))
+            indices = np.append(non_ground, ground)
             lidar.xyz = points[indices]
             segment_ids = np.append(segment_ids, np.full(len(ground), -1))
             lidar.add_extra_dim(laspy.ExtraBytesParams(name="segment_id", type=np.int32))
