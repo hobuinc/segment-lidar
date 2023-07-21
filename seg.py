@@ -9,21 +9,20 @@ import pyarrow as pa
 import pyarrow.feather as ft
 
 model = samlidar.SamLidar(ckpt_path="seg-lidar/sam_vit_h_4b8939.pth")
-inDir = "tiles/"
+inDir = "new_tiles/"
 outRaster = "rasters/"
 outLabels = "labels/"
 outSeg = "segments/"
 
 li = [inDir, outRaster, outLabels, outSeg]
 for i in li:
-    try:
-        os.path.exists(i)
-    except:
+    if not os.path.exists(i):
         os.mkdir(i)
 
 sort = pdal.Filter.sort(dimension="GPSTime")
 outlier = pdal.Filter.outlier(method="radius", radius="1.0", min_k="4")
 filters = [outlier, sort]
+hag = pdal.Filters.hag_nn()
 
 
 # if 'points_filtered.feather' in os.listdir('arrows/'):
@@ -39,15 +38,15 @@ for tile in os.listdir(inDir):
         start=time.time()
         print(inDir+tile)
         points, pdal_points = model.read(inDir+tile)
-        #pdal_points = model.applyFilters(pdal_points, [outlier])
+        pdal_points = model.applyFilters(pdal_points, [outlier])
         cloud, non_ground, ground, pdal_points= model.smrf(pdal_points)
         labels, *_ = model.segment(points=cloud, image_path=outRaster+tile+"-raster.tif", labels_path=outLabels+tile+"-labeled.tif")
+        pdal_points = model.applyFilters(pdal_points, [hag])
         points_grouped = model.grouping(pdal_points, labels, ground, non_ground)
         pdal_points = model.featureFilter(points_grouped, file)
-        breakpoint()
-        df = pd.DataFrame(pdal_points)
-        table = pa.Table.from_pandas(df)
-        ft.write_feather(table, 'arrows/points_filtered.feather')
-        model.write(points=pdal_points, non_ground=non_ground, ground=ground, segment_ids=labels, save_path=outSeg+tile+"-segmented.las")
+        #df = pd.DataFrame(pdal_points)
+        #table = pa.Table.from_pandas(df)
+        #ft.write_feather(table, 'arrows/points_filtered.feather')
+        #model.write(points=pdal_points, non_ground=non_ground, ground=ground, segment_ids=labels, save_path=outSeg+file+"segmented.las")
         end = time.time()
         print(f'Segment-lidar completed in {end - start:.2f} seconds.\n')

@@ -390,7 +390,7 @@ class SamLidar:
 
         print(f'Segmentation is completed in {end - start:.2f} seconds. Number of instances: {np.max(segmented_image)}\n')
         return segment_ids, segmented_image, image_rgb
-  
+
     
     def grouping(self, pdal_points: np.ndarray, segment_ids: np.ndarray, ground, non_ground) -> np.ndarray:
         #add support for ground = none
@@ -422,7 +422,8 @@ class SamLidar:
                 for col in features:
                     filtered[col] = np.full(len(filtered), np.median(filtered[col]))
                 temp = np.full(filtered.shape[0], np.mean(filtered['NumberOfReturns']), dtype=[('meanNumReturns', '<f8')])
-                filtered = rfn.merge_arrays((filtered, temp), flatten =True)
+                temp1 = np.full(filtered.shape[0], np.mean(filtered['HeightAboveGround']), dtype=[('meanHAG', '<f8')])
+                filtered = rfn.merge_arrays((filtered, temp, temp1), flatten =True)
                 points_filtered.append(filtered)
                 num+=1
             else:
@@ -430,7 +431,8 @@ class SamLidar:
                     a = np.full(array.shape[0], 0, dtype=[(col,'<f8')])
                     array = rfn.merge_arrays((array, a), flatten=True)
                 temp = np.full(array.shape[0], np.mean(array['NumberOfReturns']), dtype=[('meanNumReturns', '<f8')])
-                array = rfn.merge_arrays((array, temp), flatten =True)
+                temp1 = np.full(filtered.shape[0], np.mean(filtered['HeightAboveGround']), dtype=[('meanHAG', '<f8')])
+                array = rfn.merge_arrays((array, temp, temp1), flatten =True)
                 points_filtered.append(array)
                 print("test")
         points_filtered = np.concatenate(points_filtered)
@@ -493,6 +495,7 @@ class SamLidar:
 
         if ground is not None:
             indices = np.append(non_ground, ground)
+            breakpoint()
             lidar.xyz = points[indices]
             segment_ids = np.append(segment_ids, np.full(len(ground), -1))
             lidar.add_extra_dim(laspy.ExtraBytesParams(name="segment_id", type=np.int32))
