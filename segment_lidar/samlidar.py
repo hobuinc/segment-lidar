@@ -2,13 +2,8 @@
 # Author : Anass Yarroudh (ayarroudh@uliege.be), Geomatics Unit of ULiege
 # This file is distributed under the BSD-3 licence. See LICENSE file for complete text of the license.
 
-from cProfile import label
 import os
 import time
-from typing import Dict, Optional, Set, cast
-from matplotlib.pyplot import cla
-from regex import F
-import torch
 from typing import Dict, Optional, Set, cast
 from matplotlib.pyplot import cla
 from regex import F
@@ -26,10 +21,6 @@ from typing import List, Tuple
 import rasterio
 import laspy
 import pdal
-import cv2
-import pandas as pd
-import pyarrow as pa
-import pyarrow.feather as ft
 
 # file formats supported
 pdal_formats = set({".laz", ".las", ".ply", ".pcd", ".xyz", ".pts", ".txt", ".csv", ".asc", ".e57"})
@@ -271,7 +262,7 @@ class SamLidar:
             pcd = pipeline.arrays[0]
         
         dtypes = pcd.dtype
-        breakpoint()
+        
         fields = tuple(dtypes.names)
         fields_set = set(fields)
         has_position = any(set(c).issubset(fields_set) for c in position_fields)
@@ -305,14 +296,14 @@ class SamLidar:
        
         end = time.time()
         print(f'File reading is completed in {end - start:.2f} seconds. The point cloud contains {pcd_casted.shape[0]} points.\n')
-        breakpoint()
-        return (pcd_casted.dtype, structured_to_unstructured(pcd_casted), pcd_casted)
+        
+        return (pcd_casted)
   
     def applyFilters(self, pdal_points: np.ndarray, filters=[], multi_array=False) -> np.ndarray:
         """
         Gives ability to apply PDAL Filters before segmentation such as denoising.
 
-        :param pdal_points: The input point cloud as a NumPy array, where each row represents a point with x, y, z coordinates.
+        :param pdal_points: The input point cloud as a structured array.
         :type pdal_points: np.ndarray
         :param filters: Array of the PDAL filters defined to be applied.
         :type filters: array
@@ -330,10 +321,30 @@ class SamLidar:
             pdal_points = pipeline.arrays[0]
         else:
             pdal_points = pipeline.arrays
-
-
         return pdal_points
     
+    def noiseFilter(self, pdal_points: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Filters out noise points with PDAL filters.
+    
+        :param pdal_points: The input point cloud as a NumPy structured array.
+        :type pdal_points: np.ndarray
+        :return: A tuple containing a NumPy array with noise points removed, and a 
+        NumPy array with only noise points.
+        :rtype: Tuple[np.ndarray, np.ndarray]
+        """
+        start = time.time()
+        print(f'Applying PDAL noise filter ...')
+        outlier = pdal.Filter.outlier(method="radius", radius="1.0", min_k="4")
+        filtered = SamLidar.applyFilters(self, pdal_points, [outlier])
+        noise = np.where(filtered['Classification']==7) or np.where(filtered(['Classification'] > 20))
+        noise_pts = pdal_points[noise]
+        pdal_points = np.delete(filtered, noise)
+        end = time.time()
+        print(f'Noise filtering is completed in {end - start:.2f} seconds. The filtered cloud contains {pdal_points.shape[0]} points.\n')
+        return pdal_points, noise_pts
+
+         
     def csf(self, points: np.ndarray, class_threshold: float = 0.5, cloth_resolution: float = 0.2, iterations: int = 500, slope_smooth: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Applies the CSF (Cloth Simulation Filter) algorithm to filter ground points in a point cloud.
@@ -369,7 +380,7 @@ class SamLidar:
         np.info(ground)
         print("non ground:",non_ground)
         np.info(non_ground)
-        breakpoint()
+        
 
         points = points[non_ground, :]
         os.remove('cloth_nodes.txt')
@@ -384,7 +395,7 @@ class SamLidar:
         """
         Applies the SMRF (Simple Morphological Filter) algorithm to filter ground points in a point cloud.
 
-        :param pdal_points: The input point cloud as a NumPy array, where each row represents a point with x, y, z coordinates.
+        :param pdal_points: The input point cloud as a NumPy structured array.
         :type points: np.ndarray
         :return: A tuple containing three arrays: the filtered point cloud, non-ground (filtered) points indinces and ground points indices.
         :rtype: Tuple[np.ndarray, np.ndarray, np.ndarray]
@@ -392,7 +403,10 @@ class SamLidar:
         start = time.time()
         print(f'Applying SMRF algorithm...')
         smrf = pdal.Filter.smrf()
-        reclass = pdal.Filter.assign(value='Classification = 0')
+        reclass = pdal.Filter.assign(value='Classification = 0') | \
+                 pdal.Filter.assign(value="ReturnNumber = 1 where ReturnNumber < 1") | \
+                 pdal.Filter.assign(value="NumberOfReturns = 1 where NumberOfReturns < 1")
+
         filter_list = [reclass, smrf]
         pdal_points = SamLidar.applyFilters(self, pdal_points, filter_list)
         ground = np.where(pdal_points["Classification"]==2)
@@ -402,19 +416,18 @@ class SamLidar:
         z = pdal_points["Z"]
         points = np.vstack((x, y, z)).T
         points = np.delete(points, ground, 0)
-        ground = np.array(ground)
-        non_ground = np.array(non_ground)
         ground = np.ravel(ground)
         non_ground = np.ravel(non_ground)
         end = time.time()
         print(f'SMRF algorithm is completed in {end - start:.2f} seconds. The filtered non-ground cloud contains {points.shape[0]} points.\n')
+        
         return points, non_ground, ground, pdal_points 
 
     def segment(self, points: np.ndarray, text_prompt: str = None, image_path: str = 'raster.tif', labels_path: str = 'labeled.tif') -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Segments a point cloud based on the provided parameters and returns the segment IDs, original image, and segmented image.
 
-        :param points: The point cloud data as a NumPy array.
+        :param points: The point cloud data as a xyz NumPy array.
         :type points: np.ndarray
         :param text_prompt: Optional text prompt for segment generation, defaults to None.
         :type text_prompt: str
@@ -501,82 +514,89 @@ class SamLidar:
 
         print(f'Segmentation is completed in {end - start:.2f} seconds. Number of instances: {np.max(segmented_image)}\n')
         return segment_ids, segmented_image, image_rgb
-  
     
     def grouping(self, pdal_points: np.ndarray, segment_ids: np.ndarray, ground, non_ground) -> np.ndarray:
         """
-        Creates an array with the segments grouped by their segment_id
+        Creates a list of arrays with the segments grouped by their segment_id
     
-        :param pdal_points: The point cloud data as a NumPy array.
+        :param pdal_points: The point cloud data as a structured NumPy array.
         :type pdal_points: np.ndarray
         :param segment_ids: NumPy array of the segments.
         :type segment_ids: np.ndarray
-        :param ground: array that has all the ground points
+        :param ground: array with the indices of all ground points
         :type ground: array
-        :param non_ground: array that has all the nonground points
+        :param non_ground: array with the indices of all non-ground points
         :type non_ground: array
         :return: Numpy array that has points grouped by their segment_id.
         :rtype: np.ndarray 
         """
+        start = time.time()
+        print('Grouping points by segment ID...')
         if ground is not None:
             segment_ids = np.append(segment_ids, np.full(len(ground), -1))
-        
-        indices = np.append(non_ground, ground)
+            indices = np.append(non_ground, ground)
+        else:
+            indices = non_ground
         points_ordered = np.take(pdal_points, indices)
+
         temp = np.full(points_ordered.shape[0], 1, dtype=[('segment_id', 'i4')])
         merged = rfn.merge_arrays((points_ordered, temp), flatten=True)
-        
         merged['segment_id'] = segment_ids
-        
-        groupby = pdal.Filter.groupby(dimension="segment_id")
+
+        groupby = pdal.Filter.groupby(dimension="segment_id", where = "segment_id != -1")
         filters = [groupby]
         
         points_grouped = SamLidar.applyFilters(self, merged, filters, multi_array=True)
-      
+        end = time.time()
+        print(f'Grouping is complete in {end - start:.2f} seconds.')  
         return points_grouped
-    
-    def featureFilter(self, points_grouped: np.ndarray, file) -> np.ndarray:
-        """
-        Adds PDAL Dimesionality Data Types to the Segments.
-    
-        :param points: The input point cloud data as a NumPy array, where each row represents a point with x, y, z coordinates.
-        :type points: np.ndarray
-        :param file: The name of the orginal input file minus extension.
-        :type file: string
-        :return: NumPy that has PDAL Dimesionality Data Types defined with each one being the average of its segment.
-        :rtype: np.ndarray 
-        """
-        cov = pdal.Filter.covariancefeatures(feature_set="Dimensionality")
-        eigen = pdal.Filter.eigenvalues()
-        filters = [cov, eigen]
-        num =0
-        points_filtered = []
-        features = ['Linearity', 'Planarity', 'Scattering', 'Verticality', 'Eigenvalue0', 'Eigenvalue1', 'Eigenvalue2']
-        for array in points_grouped:
-            if len(array) >= 10 and np.mean(array['Classification']) != 2:
-                filtered = SamLidar.applyFilters(self, array, filters)
-                for col in features:
-                    filtered[col] = np.full(len(filtered), np.median(filtered[col]))
-                temp = np.full(filtered.shape[0], np.mean(filtered['NumberOfReturns']), dtype=[('meanNumReturns', '<f8')])
-                filtered = rfn.merge_arrays((filtered, temp), flatten =True)
-                points_filtered.append(filtered)
-                num+=1
-            else:
-                for col in features:
-                    a = np.full(array.shape[0], 0, dtype=[(col,'<f8')])
-                    array = rfn.merge_arrays((array, a), flatten=True)
-                temp = np.full(array.shape[0], np.mean(array['NumberOfReturns']), dtype=[('meanNumReturns', '<f8')])
-                array = rfn.merge_arrays((array, temp), flatten =True)
-                points_filtered.append(array)
-                print("test")
-        points_filtered = np.concatenate(points_filtered)
-        array_pipeline = pdal.Pipeline(None, [points_filtered])
-        writer = pdal.Writer.copc(filename=f"tests/12345_{file}.copc.laz")
-        p = array_pipeline | writer
-        p.execute()
-        return points_filtered
 
-    def classify(self, points_filtered, file):
+
+    def featureFilter(self, points_grouped: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Adds PDAL Dimesionality Data Types to the Segments and merges the list of arrays.
+    
+        :param points_grouped: The input point cloud data as an array of multiple structured NumPy arrays.
+        :type points: np.ndarray
+        :return: A tuple containing a NumPy array with average PDAL Dimesionality Data Types of each segment,
+        and a NumPy array containing ground, non-segmented points, and small segments.
+        :rtype: Tuple[np.ndarray, np.ndarray]
+        """
+        start = time.time()
+        print("Applying PDAL 'covariancefeatures' and 'eigenvalue' filters based on segment ID")
+        bad_pts = points_grouped[0]
+        points_grouped = points_grouped[1:]
+        if len(points_grouped) > 1:
+            cov = pdal.Filter.covariancefeatures(feature_set="Dimensionality")
+            eigen = pdal.Filter.eigenvalues()
+            filters = [cov, eigen]
+            points_filtered = []
+            small_pts = []
+            features = ['Linearity', 'Planarity', 'Scattering', 'Verticality', 'Eigenvalue0', 'Eigenvalue1', 'Eigenvalue2']
+
+            for array in points_grouped:
+                if len(array) >= 10:
+                    filtered = SamLidar.applyFilters(self, array, filters)
+                    for col in features:
+                        filtered[col] = np.full(len(filtered), np.median(filtered[col]))
+                    temp = np.full(filtered.shape[0], np.mean(filtered['NumberOfReturns']), dtype=[('meanNumReturns', '<f8')])
+                    filtered = rfn.merge_arrays((filtered, temp), flatten =True)
+                    points_filtered.append(filtered)
+                else:
+                    small_pts.append(array)       
+            points_filtered = np.concatenate(points_filtered)
+            if small_pts:
+                #test if this works for 1 small pts segment
+                small_pts = np.concatenate(small_pts)
+                bad_pts = np.append(bad_pts, small_pts)
+        else:
+            points_filtered = None
+            print("No segments to be filtered")
+        end = time.time()
+        print(f'Filtering is complete in {end - start:.2f} seconds.')  
+        return points_filtered, bad_pts
+
+    def classify(self, points_filtered, bad_pts, name, location):
         """
         Classifies the Point Cloud Data using the Dimesionality Data Types.
 
@@ -587,21 +607,54 @@ class SamLidar:
         :return: points_filtered
         :rtype: np.ndarray
         """ 
-        if np.ptp(points_filtered['NumberOfReturns']) == 0:
-            veg = np.where(points_filtered['Scattering']>0.35 and points_filtered['Classification'] !=2)
-        else:
-            veg = np.where(points_filtered['Scattering']>0.3 and points_filtered['meanNumReturns']>2 and points_filtered['Classification'] ==1)
-        veg = np.array(veg)
-        veg = np.ravel(veg)
+
+         #obtain one of each segment ID for percentile info 
+        uniq_id, indicies = np.unique(points_filtered[:]['segment_id'], return_index = True)
+        uniq_id = points_filtered[indicies]
+        uniq_groundless = np.delete(arr = uniq_id, axis=0, obj = (np.where(uniq_id['Classification'] == 2))) 
+
+        max_scatter = uniq_groundless['Scattering'].max()
+        max_planar = uniq_groundless['Planarity'].max()
+        max_mean_ret = uniq_groundless['meanNumReturns'].max() 
+        max_linearity = uniq_groundless['Linearity'].max()
+        points_filtered['Scattering'] = points_filtered['Scattering']/ max_scatter
+        points_filtered['Planarity'] = points_filtered['Planarity']/ max_planar
+        points_filtered['meanNumReturns'] = points_filtered['meanNumReturns']/ max_mean_ret
+        points_filtered['Linearity'] = points_filtered['Linearity']/ max_linearity
+
+        # #obtain percentiles 
+        scatter_perc = np.percentile(a = uniq_groundless['Scattering'], q = np.arange(10, 100, 10)) 
+        planar_perc = np.percentile(a = uniq_groundless['Planarity'], q = np.arange(10, 100, 10)) 
+        mean_ret_perc = np.percentile(a = uniq_groundless['meanNumReturns'], q = np.arange(10, 100, 10)) 
+        linearity_perc = np.percentile(a = uniq_groundless['Linearity'], q = np.arange(10, 100, 10)) 
+
+        #Save percentile outputs
+        np.savetxt(f'./data/class/{location}/scattering/{name}-scatter.txt', scatter_perc)
+        np.savetxt(f'./data/class/{location}/planarity/{name}-planarity.txt', planar_perc)
+        np.savetxt(f'./data/class/{location}/meanRet/{name}-meanRet.txt', mean_ret_perc)
+        np.savetxt(f'./data/class/{location}/linearity/{name}-linearity.txt', linearity_perc)
+
+        veg = np.where(points_filtered['Scattering'] >= .5) and np.where(points_filtered['Classification'] != 2)
+        build = np.where(points_filtered['Classification'] != 2) and np.where(points_filtered['Planarity'] > .5) and np.where(points_filtered['Scattering'] < .5)
+
+
+        classes = [veg, build]
+        for obj in classes:
+            obj = np.array(obj)
+            obj = np.ravel(obj)
+
         np.put(points_filtered['Classification'], veg, 4)
-        breakpoint()
-        built = np.where(points_filtered['Planarity'])
-        array_pipeline = pdal.Pipeline(None, [points_filtered])
-        writer = pdal.Writer.copc(filename=f"tests/TEST1filters_{file}.copc.laz")
-        p = array_pipeline | writer
+        np.put(points_filtered['Classification'], build, 6)
+
+        writer_options = {'forward': 'all'}
+        p = getattr(pdal.Writer, 'copc')(filename = f'./data/class/{location}/all-info/{name}.copc.laz', **writer_options).pipeline(points_filtered)
         p.execute()
-        breakpoint()
-        return points_filtered
+
+        base_fields = list(bad_pts.dtype.names)
+        points_filtered = points_filtered[base_fields]
+        classified_points = np.append(points_filtered, bad_pts)
+
+        return classified_points
 
 
     def write(self, points: np.ndarray, segment_ids: np.ndarray, non_ground: np.ndarray = None, ground: np.ndarray = None, save_path: str = 'segmented.las') -> None:
@@ -648,18 +701,18 @@ class SamLidar:
             lidar.add_extra_dim(laspy.ExtraBytesParams(name="segment_id", type=np.int32))
             lidar.segment_id = segment_ids
 
-        lidar.write(save_path)
+        lidar.write(save_path) 
 
         end = time.time()
         print(f'Writing is completed in {end - start:.2f} seconds.\n')
         return None
     
     
-    def write_pdal(self, points: np.ndarray, points_filtered: np.ndarray, segment_ids: np.ndarray, non_ground: Optional[np.ndarray] = None, ground: Optional[np.ndarray] = None, save_path: str = 'segmented.laz', dtypes: Optional[np.dtype] = None):
+    def write_pdal(self, points: np.ndarray, segment_ids: np.ndarray, non_ground: Optional[np.ndarray] = None, ground: Optional[np.ndarray] = None, noise: Optional[np.ndarray] = None, save_path: str = 'segmented.laz', dtypes: Optional[np.dtype] = None):
         """
-        Writes the segmented point cloud data to any pointcloud format supported by PDAL.
+        Writes the segmented point cloud data to any pointcloud format supported by PDAL, checks if the array is structured or not, if it is not a structured array it will convert to structured array.
 
-        :param points: The input point cloud data as a NumPy array, where each row represents a point with x, y, z coordinates.
+        :param points: The input point cloud data as a NumPy array whether structured or not.
         :type points: np.ndarray
         :param segment_ids: The segment IDs corresponding to each point in the point cloud.
         :type segment_ids: np.ndarray
@@ -673,13 +726,10 @@ class SamLidar:
         """
         start = time.time()
         
-        if points_filtered != None:
-            points = points_filtered
-
         extension = os.path.splitext(save_path)[1]
         try:
             if extension not in formats:
-                raise ValueError(f'The input file format {extension} is not supported.\nThe file format should be [.las/.laz].')
+               raise ValueError(f'The input file format {extension} is not supported.\nThe file format should be [.las/.laz].')
         except ValueError as error:
             message = str(error)
             lines = message.split('\n')
@@ -688,47 +738,65 @@ class SamLidar:
             exit()
 
         print(f'Writing the segmented point cloud to {save_path}...')
-
-        indices = np.arange(len(points))
+        if points.dtype.names is None:
+            #rewrite this so grouping/featurefilter can be bypassed
+            indices = np.arange(len(points))
         
-        if ground is not None and non_ground is not None:
-            indices = np.concatenate((non_ground, ground))
-            data = points[indices]
-            segment_ids = np.append(segment_ids, np.full(len(ground), -1))
-        else:
-            data = points[indices]
-        
-        data = np.hstack((data, segment_ids.reshape(-1, 1)))
-        
-        if dtypes is None or dtypes.names is None or len(dtypes.names) == 0:
-            if data.shape[0] == 4:
-                dtypes = np.dtype([('X', np.float64), ('Y', np.float64), ('Z', np.float64), ('segment_id', np.int32)])
-            elif data.shape[0] == 7:
-                dtypes = np.dtype([('X', np.float64), ('Y', np.float64), ('Z', np.float64), ('Red', np.uint16), ('Green', np.uint16), ('Blue', np.uint16), ('segment_id', np.int32)])
-            elif data.shape[0] == 24:
-                dtypes = np.dtype([('X', np.float64), ('Y', np.float64), ('Z', np.float64), ('Red', np.uint16), ('Green', np.uint16), ('Blue', np.uint16), ('Intensity', np.uint16), ('ReturnNumber', np.uint8), ('NumberOfReturns', np.uint8), ('ScanDirectionFlag', np.uint8), ('EdgeOfFlightLine', np.uint8), ('Classification', np.uint8), ('ScanAngleRank', np.float64), ('UserData', np.uint8), ('PointSourceId', np.uint16), ('GpsTime', np.float64), ('segment_id', np.int32), ('Linearity', np.float64), ('Planarity', np.float64), ('Scattering', np.float64), ('Verticality', np.float64), ('Eigenvalue0', np.float64), ('Eigenvalue1', np.float64), ('Eigenvalue2', np.float64)])
-                #('X', np.float64), ('Y', np.float64), ('Z', np.float64), ('Intensity', '<u2'), ('ReturnNumber', 'u1'), ('NumberOfReturns', 'u1'), ('ScanDirectionFlag', 'u1'), ('EdgeOfFlightLine', 'u1'), ('Classification', 'u1'), ('ScanAngleRank', '<f4'), ('UserData', 'u1'), ('PointSourceId', '<u2'), ('GpsTime', np.float64), ('Red', '<u2'), ('Green', '<u2'), ('Blue', '<u2'), ('seg_id', '<i4'), ('Linearity', np.float64), ('Planarity', np.float64), ('Scattering', np.float64), ('Verticality', np.float64), ('Eigenvalue0', np.float64), ('Eigenvalue1', np.float64), ('Eigenvalue2', np.float64)]
-                
+            if ground is not None and non_ground is not None:
+                indices = np.concatenate((non_ground, ground))
+                data = points[indices]
+                segment_ids = np.append(segment_ids, np.full(len(ground), -1))
             else:
-                dtype_descriptions = [('X', np.float64), ('Y', np.float64), ('Z', np.float64), ('Red', np.uint16), ('Green', np.uint16), ('Blue', np.uint16)]
-                dtype_descriptions.extend([(f'scalar_{i}', np.float64 if isinstance(i, float) else (np.int64 if isinstance(i, int) else str)) for i in range(data.shape[1] - 7)])
-                dtype_descriptions.append(('segment_id', np.int32))
-                dtypes = np.dtype(dtype_descriptions)
-        dtypes_casted = np.dtype([(label, np.float64) if label in position_fields_set or label in color_fields_set or label in intensity_fields_set else (label, dtypes[label]) for label in dtypes.names]) # type: ignore
-        pcd = unstructured_to_structured(points[indices], dtypes_casted)
-        for label in dtypes.names: # type: ignore
-            if label in color_fields_set:
-                print(f'- Adding color:{label} to the segmented point cloud...')
-                if label[0].lower() == 'r':
-                    pcd['Red'] = (pcd[label] * 65536.0).astype(np.uint16)
-                elif label[0].lower() == 'g':
-                    pcd['Green'] = (pcd[label] * 65536.0).astype(np.uint16)
-                else:
-                    pcd['Blue'] = (pcd[label] * 65536.0).astype(np.uint16)
-            elif label not in position_fields_set:
-                pcd[label] = pcd[label]
-        pcd = pcd.astype(dtypes, copy=True)
+                data = points[indices]
         
+            data = np.hstack((data, segment_ids.reshape(-1, 1)))
+                            
+            if dtypes is None or dtypes.names is None or len(dtypes.names) == 0:
+                if data.shape[0] == 4:
+                    dtypes = np.dtype([('X', np.float64), ('Y', np.float64), ('Z', np.float64), ('segment_id', np.int32)])
+                elif data.shape[0] == 7:
+                    dtypes = np.dtype([('X', np.float64), ('Y', np.float64), ('Z', np.float64), ('Red', np.uint16), ('Green', np.uint16), ('Blue', np.uint16), ('segment_id', np.int32)])
+                elif data.shape[0] == 24:
+                        dtypes = np.dtype([('X', np.float64), ('Y', np.float64), ('Z', np.float64), ('Red', np.uint16), ('Green', np.uint16), ('Blue', np.uint16), ('Intensity', np.uint16), ('ReturnNumber', np.uint8), ('NumberOfReturns', np.uint8), ('ScanDirectionFlag', np.uint8), ('EdgeOfFlightLine', np.uint8), ('Classification', np.uint8), ('ScanAngleRank', np.float64), ('UserData', np.uint8), ('PointSourceId', np.uint16), ('GpsTime', np.float64), ('segment_id', np.int32), ('Linearity', np.float64), ('Planarity', np.float64), ('Scattering', np.float64), ('Verticality', np.float64), ('Eigenvalue0', np.float64), ('Eigenvalue1', np.float64), ('Eigenvalue2', np.float64)])
+                    #('X', np.float64), ('Y', np.float64), ('Z', np.float64), ('Intensity', '<u2'), ('ReturnNumber', 'u1'), ('NumberOfReturns', 'u1'), ('ScanDirectionFlag', 'u1'), ('EdgeOfFlightLine', 'u1'), ('Classification', 'u1'), ('ScanAngleRank', '<f4'), ('UserData', 'u1'), ('PointSourceId', '<u2'), ('GpsTime', np.float64), ('Red', '<u2'), ('Green', '<u2'), ('Blue', '<u2'), ('seg_id', '<i4'), ('Linearity', np.float64), ('Planarity', np.float64), ('Scattering', np.float64), ('Verticality', np.float64), ('Eigenvalue0', np.float64), ('Eigenvalue1', np.float64), ('Eigenvalue2', np.float64)]
+                
+                else:
+                    dtype_descriptions = [('X', np.float64), ('Y', np.float64), ('Z', np.float64), ('Red', np.uint16), ('Green', np.uint16), ('Blue', np.uint16)]
+                    dtype_descriptions.extend([(f'scalar_{i}', np.float64 if isinstance(i, float) else (np.int64 if isinstance(i, int) else str)) for i in range(data.shape[1] - 7)])
+                    dtype_descriptions.append(('segment_id', np.int32))
+                    dtypes = np.dtype(dtype_descriptions)
+            dtypes_casted = np.dtype([(label, np.float64) if label in position_fields_set or label in color_fields_set or label in intensity_fields_set else (label, dtypes[label]) for label in dtypes.names]) # type: ignore
+        
+        
+            pcd = unstructured_to_structured(points[indices], dtypes_casted)
+
+            for label in dtypes.names: # type: ignore
+                if label in color_fields_set:
+                    print(f'- Adding color:{label} to the segmented point cloud...')
+                    if label[0].lower() == 'r':
+                        pcd['Red'] = (pcd[label] * 65536.0).astype(np.uint16)
+                    elif label[0].lower() == 'g':
+                        pcd['Green'] = (pcd[label] * 65536.0).astype(np.uint16)
+                    else:
+                        pcd['Blue'] = (pcd[label] * 65536.0).astype(np.uint16)
+                elif label not in position_fields_set:
+                    pcd[label] = pcd[label]
+                    pcd = pcd.astype(dtypes, copy=True)
+                    
+        else:
+            if noise:
+                points = np.append(points, noise)
+            if 'segment_id' not in points.dtype.names:
+                if ground is not None:
+                    segment_ids = np.append(segment_ids, np.full(len(ground), -1))
+                    indices = np.append(non_ground, ground)
+                else:
+                    indices = non_ground
+                points_ordered = np.take(points, indices)
+                temp = np.full(points_ordered.shape[0], 1, dtype=[('segment_id', 'i4')])
+                points = rfn.merge_arrays((points_ordered, temp), flatten=True)
+                points['segment_id'] = segment_ids
+            pcd = points 
         writer_name = "las"
         writer_options = {'extra_dims': 'all', 'compression': 'laszip'}
         if extension == '.las':
@@ -745,7 +813,9 @@ class SamLidar:
         elif extension == '.pcd':
             writer_name = 'pcd'
             writer_options = {'compression': 'compressed', 'order': dtypes.names.join(','), 'precision': 14} # type: ignore
-            
+        elif '.copc.laz' in save_path:
+            writer_name = 'copc'
+            writer_options = {'forward': 'all'}   
         p = getattr(pdal.Writer, writer_name)(filename=save_path, **writer_options).pipeline(pcd)
         r = p.execute()
         
