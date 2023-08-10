@@ -1,54 +1,71 @@
 import os
-from posixpath import splitext
 import pdal
 import time
 from segment_lidar import samlidar
 import pandas as pd
 import numpy as np
-import pyarrow as pa
-import pyarrow.feather as ft
 
-model = samlidar.SamLidar(ckpt_path="seg-lidar/sam_vit_h_4b8939.pth")
-inDir = "tiles/"
-outRaster = "rasters/"
-outLabels = "labels/"
-outSeg = "segments/"
-arrows = "arrows/"
+#Select model for segmentings
+model = samlidar.SamLidar(ckpt_path="seg-lidar/sam_vit_h_4b8939.pth", algorithm='segment-geospatial')
 
-li = [inDir, outRaster, outLabels, outSeg]
+# get pointcloud seed name
+fileDir = input("Select the name of the folder in [./data/cloud] you would like to run: ")
+prefix = "./data/class/"
+
+#Throw an error if the requested data does not exist
+if not os.path.exists(f"data/cloud/{fileDir}/"):
+    raise FileNotFoundError("No data found for given seed")
+
+
+#initialize directory locations
+inDir = f"./data/cloud/{fileDir}/"
+outRaster = f"{prefix}{fileDir}/rasters/"
+outLabels = f"{prefix}{fileDir}/labels/"
+outSeg = f"{prefix}{fileDir}/"
+scattering = f"{prefix}{fileDir}/scattering/"
+planarity = f"{prefix}{fileDir}/planarity/"
+meanRet = f"{prefix}{fileDir}/meanRet/"
+linearity = f"{prefix}{fileDir}/linearity/"
+arrows = f"{prefix}{fileDir}/arrows/"
+allData = f"{prefix}{fileDir}/all-info/"
+
+#Create directories if they do not exist
+li = ["./data", "./data/cloud", "./data/class", prefix+fileDir, outRaster, outLabels, outSeg, scattering, planarity, meanRet, linearity, arrows, allData]
 for i in li:
-    try:
-        os.path.exists(i)
-    except:
-        os.mkdir(i)
+    if not os.path.exists(i):
+            os.mkdir(i)
 
-sort = pdal.Filter.sort(dimension="GPSTime")
-outlier = pdal.Filter.outlier(method="radius", radius="1.0", min_k="4")
-filters = [outlier, sort]
+#Initialize filters
+hag = [pdal.Filter.hag_nn()]
 
 
-if 'points_filtered.feather' in os.listdir(arrows):
-    feather = ft.read_table('arrows/points_filtered.feather')
-    df1 = feather.to_pandas()
-    s = df1.dtypes
-    pdal_points = np.array([tuple(x) for x in df1.values], dtype=list(zip(s.index, s)))
-    pdal_points = model.classify(pdal_points)
-    breakpoint()
 for tile in os.listdir(inDir):
-    if (not tile.startswith('.')):
-        breakpoint(print('no'))
-        file = os.path.splitext(tile)[0]
+    #discards .DS_store in search
+    if (not tile.startswith('.') and os.path.isfile(inDir + tile)):
+
+        #obtain name for file
+        file = tile.split('.')[0]
         start=time.time()
         print(inDir+tile)
-        points, pdal_points = model.read(inDir+tile)
-        #pdal_points = model.applyFilters(pdal_points, [outlier])
+
+        #read file for points
+        pdal_points = model.read(inDir+tile)
+        
+        #performs segmentation on file
+        pdal_points, noise = model.noiseFilter(pdal_points)
         cloud, non_ground, ground, pdal_points= model.smrf(pdal_points)
-        labels, *_ = model.segment(points=cloud, image_path=outRaster+tile+"-raster.tif", labels_path=outLabels+tile+"-labeled.tif")
+
+        #Add HAG
+        pdal_points = model.applyFilters(pdal_points = pdal_points, filters = hag)
+
+        #segment file
+        labels, *_ = model.segment(points=cloud, image_path=outRaster+file+"-raster.tif", labels_path=outLabels+file+"-labeled.tif")
         points_grouped = model.grouping(pdal_points, labels, ground, non_ground)
-        pdal_points = model.featureFilter(points_grouped, file)
-        df = pd.DataFrame(pdal_points)
-        table = pa.Table.from_pandas(df)
-        ft.write_feather(table, 'arrows/points_filtered.feather')
-        model.write(points=pdal_points, non_ground=non_ground, ground=ground, segment_ids=labels, save_path=outSeg+tile+"-segmented.las")
+        pdal_points, bad_pts = model.featureFilter(points_grouped)
+
+        #classify if there exist points
+        if pdal_points is not None:
+            classified_points = model.classify(pdal_points, bad_pts, file, fileDir)
+            model.write_pdal(points=classified_points, segment_ids=labels, non_ground=non_ground, ground=ground,  save_path=outSeg+file+"-segmented.copc.laz")
         end = time.time()
         print(f'Segment-lidar completed in {end - start:.2f} seconds.\n')
