@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 
 #Select model for segmentings
+
 model = samlidar.SamLidar(ckpt_path="seg-lidar/sam_vit_h_4b8939.pth", algorithm='segment-geospatial')
 
 # get pointcloud seed name
@@ -45,6 +46,7 @@ for tile in os.listdir(inDir):
 
         #obtain name for file
         file = tile.split('.')[0]
+
         start=time.time()
         print(inDir+tile)
 
@@ -54,6 +56,7 @@ for tile in os.listdir(inDir):
         #performs segmentation on file
         pdal_points, noise = model.noiseFilter(pdal_points)
         cloud, non_ground, ground, pdal_points= model.smrf(pdal_points)
+
 
         #Add HAG
         pdal_points = model.applyFilters(pdal_points = pdal_points, filters = hag)
@@ -67,5 +70,6 @@ for tile in os.listdir(inDir):
         if pdal_points is not None:
             classified_points = model.classify(pdal_points, bad_pts, file, fileDir)
             model.write_pdal(points=classified_points, segment_ids=labels, non_ground=non_ground, ground=ground,  save_path=outSeg+file+"-segmented.copc.laz")
+
         end = time.time()
         print(f'Segment-lidar completed in {end - start:.2f} seconds.\n')
