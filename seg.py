@@ -69,7 +69,7 @@ for tile in os.listdir(inDir):
         #classify if there exist points
         if pdal_points is not None:
             classified_points = model.classify(pdal_points, bad_pts, file, fileDir)
-            model.write_pdal(points=classified_points, segment_ids=labels, non_ground=non_ground, ground=ground, noise=noise, save_path=outSeg+file+"-segmented.copc.laz")
+            model.write_pdal(points=classified_points, segment_ids=labels, non_ground=non_ground, ground=ground,  save_path=outSeg+file+"-segmented.copc.laz")
 
         end = time.time()
         print(f'Segment-lidar completed in {end - start:.2f} seconds.\n')
