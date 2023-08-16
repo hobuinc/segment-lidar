@@ -5,7 +5,7 @@ from segment_lidar import samlidar
 import pandas as pd
 import numpy as np
 
-#Select model for segmentings
+#Select model for segmenting
 
 model = samlidar.SamLidar(ckpt_path="seg-lidar/sam_vit_h_4b8939.pth", algorithm='segment-geospatial')
 

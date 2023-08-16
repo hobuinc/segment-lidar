@@ -627,7 +627,7 @@ class SamLidar:
         print(f'Filtering is complete in {end - start:.2f} seconds.')  
         return points_filtered, bad_pts
 
-    def classify(self, points_filtered, bad_pts, name, location):
+    def classify(self, points_filtered, bad_pts, name, location, output_txt: bool = False):
         """
         Classifies the Point Cloud Data using the Dimesionality Data Types.
 
@@ -660,10 +660,11 @@ class SamLidar:
         linearity_perc = np.percentile(a = uniq_groundless['Linearity'], q = np.arange(10, 100, 10)) 
 
         #Save percentile outputs
-        np.savetxt(f'./data/class/{location}/scattering/{name}-scatter.txt', scatter_perc)
-        np.savetxt(f'./data/class/{location}/planarity/{name}-planarity.txt', planar_perc)
-        np.savetxt(f'./data/class/{location}/meanRet/{name}-meanRet.txt', mean_ret_perc)
-        np.savetxt(f'./data/class/{location}/linearity/{name}-linearity.txt', linearity_perc)
+        if output_txt = True:
+            np.savetxt(f'./data/class/{location}/scattering/{name}-scatter.txt', scatter_perc)
+            np.savetxt(f'./data/class/{location}/planarity/{name}-planarity.txt', planar_perc)
+            np.savetxt(f'./data/class/{location}/meanRet/{name}-meanRet.txt', mean_ret_perc)
+            np.savetxt(f'./data/class/{location}/linearity/{name}-linearity.txt', linearity_perc)
 
         veg = np.where(points_filtered['Scattering'] >= .5) and np.where(points_filtered['Classification'] != 2)
         build = np.where(points_filtered['Classification'] != 2) and np.where(points_filtered['Planarity'] > .5) and np.where(points_filtered['Scattering'] < .5)
