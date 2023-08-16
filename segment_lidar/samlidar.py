@@ -660,7 +660,7 @@ class SamLidar:
         linearity_perc = np.percentile(a = uniq_groundless['Linearity'], q = np.arange(10, 100, 10)) 
 
         #Save percentile outputs
-        if output_txt = True:
+        if output_txt == True:
             np.savetxt(f'./data/class/{location}/scattering/{name}-scatter.txt', scatter_perc)
             np.savetxt(f'./data/class/{location}/planarity/{name}-planarity.txt', planar_perc)
             np.savetxt(f'./data/class/{location}/meanRet/{name}-meanRet.txt', mean_ret_perc)
