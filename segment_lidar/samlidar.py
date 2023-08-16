@@ -823,7 +823,7 @@ class SamLidar:
                     
         else:
 
-            if noise:
+            if noise is not None:
                 points = np.append(points, noise)
             if 'segment_id' not in points.dtype.names:
                 if ground is not None:
