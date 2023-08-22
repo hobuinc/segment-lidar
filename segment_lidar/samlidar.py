@@ -340,9 +340,9 @@ class SamLidar:
         """
         start = time.time()
         print(f'Applying PDAL noise filter ...')
-        outlier = pdal.Filter.outlier(method="radius", radius="1.0", min_k="4")
+        outlier = pdal.Filter.outlier(method="statistical", multiplier="3", mean_k="8")
         filtered = SamLidar.applyFilters(self, pdal_points, [outlier])
-        noise = np.where(filtered['Classification']==7) or np.where(filtered(['Classification'] > 20))
+        noise = np.where(filtered['Classification']==7) or np.where(filtered['Classification'] > 20)
         noise_pts = pdal_points[noise]
         pdal_points = np.delete(filtered, noise)
         end = time.time()
@@ -387,34 +387,19 @@ class SamLidar:
         np.info(non_ground)
         
 
-        return pdal_points
-    
-    def noiseFilter(self, pdal_points: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Filters out noise points with PDAL filters.
-    
-        :param pdal_points: The input point cloud as a NumPy structured array.
-        :type pdal_points: np.ndarray
-        :return: A tuple containing a NumPy array with noise points removed, and a 
-        NumPy array with only noise points.
-        :rtype: Tuple[np.ndarray, np.ndarray]
-        """
-        start = time.time()
-        print(f'Applying PDAL noise filter ...')
-        outlier = pdal.Filter.outlier(method="radius", radius="1.0", min_k="4")
-        filtered = SamLidar.applyFilters(self, pdal_points, [outlier])
-        noise = np.where(filtered['Classification']==7) or np.where(filtered(['Classification'] > 20))
-        noise_pts = pdal_points[noise]
-        pdal_points = np.delete(filtered, noise)
-        end = time.time()
-        print(f'Noise filtering is completed in {end - start:.2f} seconds. The filtered cloud contains {pdal_points.shape[0]} points.\n')
-        return pdal_points, noise_pts
+        points = points[non_ground, :]
+        os.remove('cloth_nodes.txt')
 
+        end = time.time()
+        print(f'CSF algorithm is completed in {end - start:.2f} seconds. The filtered non-ground cloud contains {points.shape[0]} points.\n')
+
+        return points, np.asarray(non_ground), np.asarray(ground)
     
    
     def smrf(self, pdal_points: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Applies the SMRF (Simple Morphological Filter) algorithm to filter ground points in a point cloud.
+        Also converts the non-ground point cloud from a structured array to an unstructured XYZ-only array.
         :param pdal_points: The input point cloud as a NumPy structured array.
         :type points: np.ndarray
         :return: A tuple containing three arrays: the filtered point cloud, non-ground (filtered) points indinces and ground points indices.
@@ -537,9 +522,9 @@ class SamLidar:
         print(f'Segmentation is completed in {end - start:.2f} seconds. Number of instances: {np.max(segmented_image)}\n')
         return segment_ids, segmented_image, image_rgb
     
-    def grouping(self, pdal_points: np.ndarray, segment_ids: np.ndarray, ground, non_ground) -> np.ndarray:
+    def grouping(self, pdal_points: np.ndarray, segment_ids: np.ndarray, ground, non_ground, noise: Optional[np.ndarray] = None) -> np.ndarray:
         """
-        Creates a list of arrays with the segments grouped by their segment_id
+        Creates a list of arrays with the segments grouped by their segment_id; merges noise points (optional)
     
         :param pdal_points: The point cloud data as a structured NumPy array.
         :type pdal_points: np.ndarray
@@ -549,6 +534,8 @@ class SamLidar:
         :type ground: array
         :param non_ground: array with the indices of all non-ground points
         :type non_ground: array
+        :param noise: NumPy array with all points classified as noise from the noiseFilter function
+        :type noise: np.ndarray, optional
         :return: Numpy array that has points grouped by their segment_id.
         :rtype: np.ndarray 
         """
@@ -560,22 +547,31 @@ class SamLidar:
         else:
             indices = non_ground
         points_ordered = np.take(pdal_points, indices)
+        if noise is not None:
+            noise_types = noise.dtype.descr
+            fields = []
+            for field in points_ordered.dtype.descr:
+                if field not in noise_types:
+                    fields.append(field)
+    
+            temp = np.full((len(fields), noise.shape[0]), 0, dtype=fields)
+            noise = rfn.merge_arrays((noise, temp), flatten=True)
+            points_ordered = np.append(points_ordered, noise)
+            segment_ids = np.append(segment_ids, np.full(len(noise), -2))
 
         temp = np.full(points_ordered.shape[0], 1, dtype=[('segment_id', 'i4')])
         merged = rfn.merge_arrays((points_ordered, temp), flatten=True)
         merged['segment_id'] = segment_ids
-
-        groupby = pdal.Filter.groupby(dimension="segment_id", where = "segment_id != -1")
+        groupby = pdal.Filter.groupby(dimension="segment_id", where = "segment_id >= 0")
         filters = [groupby]
         
         points_grouped = SamLidar.applyFilters(self, merged, filters, multi_array=True)
-
-        
         end = time.time()
+
         print(f'Grouping is complete in {end - start:.2f} seconds.')  
         return points_grouped
     
-    def featureFilter(self, points_grouped: np.ndarray) -> np.ndarray:
+    def featureFilter(self, points_grouped: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
         """
         Adds PDAL Dimesionality Data Types to the Segments and merges the list of arrays.
@@ -587,19 +583,18 @@ class SamLidar:
         :rtype: Tuple[np.ndarray, np.ndarray]
         """
         start = time.time()
-        print("Applying PDAL 'covariancefeatures' and 'eigenvalue' filters based on segment ID")
+        print("Applying PDAL 'covariancefeatures' filters based on segment ID")
         bad_pts = points_grouped[0]
         points_grouped = points_grouped[1:]
         if len(points_grouped) > 1:
 
-            cov = pdal.Filter.covariancefeatures(feature_set="Dimensionality,EigenvalueSum")
+            cov = pdal.Filter.covariancefeatures(feature_set="Dimensionality")
 
-            eigen = pdal.Filter.eigenvalues()
-            filters = [cov, eigen]
+            filters = [cov]
             points_filtered = []
             small_pts = []
 
-            features = ['Linearity', 'Planarity', 'Scattering', 'Verticality', 'EigenvalueSum', 'Eigenvalue0', 'Eigenvalue1', 'Eigenvalue2']
+            features = ['Linearity', 'Planarity', 'Scattering', 'Verticality']
 
             for array in points_grouped:
                 if len(array) >= 10:
@@ -607,17 +602,12 @@ class SamLidar:
                     for col in features:
                         filtered[col] = np.full(len(filtered), np.median(filtered[col]))
                     temp = np.full(filtered.shape[0], np.mean(filtered['NumberOfReturns']), dtype=[('meanNumReturns', '<f8')])
-
-                    temp2 = np.full(filtered.shape[0], len(array), dtype=[('numPoints', 'int32')])
-                    filtered = rfn.merge_arrays((filtered, temp, temp2), flatten =True)
-
+                    filtered = rfn.merge_arrays((filtered, temp), flatten =True)
                     points_filtered.append(filtered)
                 else:
                     small_pts.append(array)       
             points_filtered = np.concatenate(points_filtered)
             if small_pts:
-
-
                 small_pts = np.concatenate(small_pts)
                 bad_pts = np.append(bad_pts, small_pts)
         else:
@@ -743,7 +733,7 @@ class SamLidar:
     
     
 
-    def write_pdal(self, points: np.ndarray, segment_ids: np.ndarray, non_ground: Optional[np.ndarray] = None, ground: Optional[np.ndarray] = None, noise: Optional[np.ndarray] = None, save_path: str = 'segmented.laz', dtypes: Optional[np.dtype] = None):
+    def write_pdal(self, points: np.ndarray, segment_ids: np.ndarray, non_ground: Optional[np.ndarray] = None, ground: Optional[np.ndarray] = None, save_path: str = 'segmented.laz', dtypes: Optional[np.dtype] = None):
 
         """
         Writes the segmented point cloud data to any pointcloud format supported by PDAL, checks if the array is structured or not, if it is not a structured array it will convert to structured array.
@@ -822,9 +812,6 @@ class SamLidar:
                     pcd = pcd.astype(dtypes, copy=True)
                     
         else:
-
-            if noise is not None:
-                points = np.append(points, noise)
             if 'segment_id' not in points.dtype.names:
                 if ground is not None:
                     segment_ids = np.append(segment_ids, np.full(len(ground), -1))

@@ -63,13 +63,13 @@ for tile in os.listdir(inDir):
 
         #segment file
         labels, *_ = model.segment(points=cloud, image_path=outRaster+file+"-raster.tif", labels_path=outLabels+file+"-labeled.tif")
-        points_grouped = model.grouping(pdal_points, labels, ground, non_ground)
+        points_grouped = model.grouping(pdal_points, labels, ground, non_ground, noise)
         pdal_points, bad_pts = model.featureFilter(points_grouped)
 
         #classify if there exist points
         if pdal_points is not None:
             classified_points = model.classify(pdal_points, bad_pts, file, fileDir)
-            model.write_pdal(points=classified_points, segment_ids=labels, non_ground=non_ground, ground=ground,  save_path=outSeg+file+"-segmented.copc.laz")
+            model.write_pdal(points=classified_points, segment_ids=labels, non_ground=non_ground, ground=ground, save_path=outSeg+file+"-segmented.copc.laz")
 
         end = time.time()
         print(f'Segment-lidar completed in {end - start:.2f} seconds.\n')
