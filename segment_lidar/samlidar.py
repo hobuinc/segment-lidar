@@ -272,7 +272,6 @@ class SamLidar:
         has_color = any(set(c).issubset(fields_set) for c in color_fields)
         has_intensity = any(set(c).issubset(fields_set) for c in intensity_fields)
         has_classification = any(set(c).issubset(fields_set) for c in classification_fields)
-        
         if not has_position:
             raise ValueError(f'The input file does not contain position values.')
         if not has_classification and classification is not None:
@@ -343,7 +342,7 @@ class SamLidar:
         outlier = pdal.Filter.outlier(method="statistical", multiplier="3", mean_k="8")
         filtered = SamLidar.applyFilters(self, pdal_points, [outlier])
         noise = np.where(filtered['Classification']==7) or np.where(filtered['Classification'] > 20)
-        noise_pts = pdal_points[noise]
+        noise_pts = filtered[noise]
         pdal_points = np.delete(filtered, noise)
         end = time.time()
         print(f'Noise filtering is completed in {end - start:.2f} seconds. The filtered cloud contains {pdal_points.shape[0]} points.\n')
@@ -553,9 +552,9 @@ class SamLidar:
             for field in points_ordered.dtype.descr:
                 if field not in noise_types:
                     fields.append(field)
-    
-            temp = np.full((len(fields), noise.shape[0]), 0, dtype=fields)
-            noise = rfn.merge_arrays((noise, temp), flatten=True)
+            if len(fields) != 0: 
+                temp = np.full((len(fields), noise.shape[0]), 0, dtype=fields)
+                noise = rfn.merge_arrays((noise, temp), flatten=True)
             points_ordered = np.append(points_ordered, noise)
             segment_ids = np.append(segment_ids, np.full(len(noise), -2))
 
@@ -619,6 +618,7 @@ class SamLidar:
 
     def classify(self, points_filtered, bad_pts, name, location, output_txt: bool = False):
         """
+
         Classifies the Point Cloud Data using the Dimesionality Data Types.
 
         :param points_filtered: The input point cloud data as a NumPy array after getting Dimensionality Data Types.
